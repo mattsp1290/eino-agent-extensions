@@ -1,0 +1,4 @@
+interface:
+  display_name: "Next Eino Extension Milestone"
+  short_description: "Choose the next Eino agent extension"
+  default_prompt: "Use $implementation-plan $next-milestone to research and plan the next Eino agent extension milestone."
