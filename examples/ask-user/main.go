@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/mattsp1290/eino-agent-extensions/askuser"
@@ -24,18 +23,10 @@ func main() {
 	fmt.Printf("ask_user: %s (%s)\n", result.Status, result.Answer)
 }
 
-type deterministicResponder struct {
-	mu     sync.Mutex
-	routed map[string]askuser.Request
-}
-
-func (responder *deterministicResponder) Respond(ctx context.Context, request askuser.Request) (askuser.Response, error) {
+func deterministicResponse(ctx context.Context, _ askuser.Request) (askuser.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return askuser.Response{}, err
 	}
-	responder.mu.Lock()
-	responder.routed[string(request.ToolCallID)] = request
-	responder.mu.Unlock()
 	return askuser.Response{Kind: askuser.ResponseSelected, SelectedOption: 2}, nil
 }
 
@@ -44,7 +35,6 @@ func askSyntheticQuestion(ctx context.Context) (result askuser.Result, err error
 	if err != nil {
 		return askuser.Result{}, err
 	}
-	responder := &deterministicResponder{routed: make(map[string]askuser.Request)}
 	mount, err := askuser.Mount(ctx, registry, extension.Component{
 		InstanceID: "example-ask-user",
 		Artifact: extension.Artifact{
@@ -52,7 +42,7 @@ func askSyntheticQuestion(ctx context.Context) (result askuser.Result, err error
 			SourceKind: extension.SourceNative,
 		},
 	}, askuser.Options{
-		Responder: responder, ResponderIdentity: "example-deterministic-responder-v1",
+		Responder: askuser.ResponderFunc(deterministicResponse), ResponderIdentity: "example-deterministic-responder-v1",
 		Limits: askuser.Limits{
 			MaxQuestionBytes: 1024, MaxOptionLabelBytes: 128,
 			MaxOptionDescriptionBytes: 512, MaxCustomAnswerBytes: 1024,

@@ -89,7 +89,7 @@ func normalizeInput(options canonicalOptions) tools.InputNormalizer {
 		if err := decoder.Decode(&input); err != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) {
 			return nil, malformed("shape")
 		}
-		if !validText(input.Question, options.limits.MaxQuestionBytes, true) {
+		if !validRequiredText(input.Question, options.limits.MaxQuestionBytes) {
 			return nil, malformed("question")
 		}
 		if len(input.Options) < 2 || len(input.Options) > 5 {
@@ -98,10 +98,10 @@ func normalizeInput(options canonicalOptions) tools.InputNormalizer {
 		seen := make(map[string]struct{}, len(input.Options))
 		for index := range input.Options {
 			item := input.Options[index]
-			if !validText(item.Label, options.limits.MaxOptionLabelBytes, true) {
+			if !validRequiredText(item.Label, options.limits.MaxOptionLabelBytes) {
 				return nil, malformed("option-label-" + strconv.Itoa(index+1))
 			}
-			if !validText(item.Description, options.limits.MaxOptionDescriptionBytes, false) {
+			if !validText(item.Description, options.limits.MaxOptionDescriptionBytes) {
 				return nil, malformed("option-description-" + strconv.Itoa(index+1))
 			}
 			if _, exists := seen[item.Label]; exists {
@@ -167,11 +167,12 @@ func consumeUniqueJSONValue(decoder *json.Decoder) bool {
 	}
 }
 
-func validText(value string, maximum int, nonblank bool) bool {
-	if !utf8.ValidString(value) || len(value) > maximum || strings.IndexByte(value, 0) >= 0 {
-		return false
-	}
-	return !nonblank || strings.TrimSpace(value) != ""
+func validText(value string, maximum int) bool {
+	return utf8.ValidString(value) && len(value) <= maximum && strings.IndexByte(value, 0) < 0
+}
+
+func validRequiredText(value string, maximum int) bool {
+	return validText(value, maximum) && strings.TrimSpace(value) != ""
 }
 
 // validUnicodeEscapes losslessly preflights JSON string escapes because

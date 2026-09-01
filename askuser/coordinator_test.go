@@ -83,7 +83,6 @@ func TestCoordinatorCapacityCountsResponderUntilExit(t *testing.T) {
 		limits.MaxInFlight = 1
 		limits.MaxWait = 20 * time.Millisecond
 	})
-	coordinator.released = make(chan struct{}, 1)
 	firstDone := make(chan Result, 1)
 	go func() {
 		result, _ := coordinator.ask(context.Background(), testCall("first"), testInput())
@@ -116,7 +115,7 @@ func TestCoordinatorCapacityCountsResponderUntilExit(t *testing.T) {
 		t.Fatalf("retained-capacity result=%#v calls=%d err=%v", third, calls.Load(), err)
 	}
 	close(release)
-	waitRelease(t, coordinator)
+	waitLive(t, coordinator, 0)
 	fourth, err := coordinator.ask(context.Background(), testCall("fourth"), testInput())
 	if err != nil || fourth.Status != StatusDismissed || calls.Load() != 2 {
 		t.Fatalf("released-capacity result=%#v calls=%d err=%v", fourth, calls.Load(), err)
@@ -262,7 +261,6 @@ func TestCoordinatorCompletionBoundaryIndependentOfSelectOrdering(t *testing.T) 
 			}), func(limits *Limits) { limits.MaxWait = 5 * time.Second })
 			clock := newBlockedClock()
 			coordinator.clock = clock
-			coordinator.released = make(chan struct{}, 1)
 			done := make(chan Result, 1)
 			go func() {
 				result, _ := coordinator.ask(context.Background(), testCall(name), testInput())
@@ -272,7 +270,7 @@ func TestCoordinatorCompletionBoundaryIndependentOfSelectOrdering(t *testing.T) 
 			<-clock.timerRequested
 			clock.set(clock.base.Add(5*time.Second + offset))
 			close(release)
-			waitRelease(t, coordinator) // publication precedes capacity release
+			waitLive(t, coordinator, 0) // publication precedes capacity release
 			clock.fire()
 			close(clock.allowTimer)
 			select {
@@ -299,10 +297,9 @@ func TestCoordinatorMaxWaitIncludesSetupTime(t *testing.T) {
 	}), func(limits *Limits) { limits.MaxWait = 5 * time.Second })
 	clock := newDelayedTimerClock(6 * time.Second)
 	coordinator.clock = clock
-	coordinator.released = make(chan struct{}, 1)
 	result, err := coordinator.ask(context.Background(), testCall("delayed-setup"), testInput())
 	close(release)
-	waitRelease(t, coordinator)
+	waitLive(t, coordinator, 0)
 	if err != nil || result.Status != StatusTimedOut {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -311,12 +308,24 @@ func TestCoordinatorMaxWaitIncludesSetupTime(t *testing.T) {
 	}
 }
 
-func waitRelease(t *testing.T, coordinator *coordinator) {
+func waitLive(t *testing.T, coordinator *coordinator, want int) {
 	t.Helper()
-	select {
-	case <-coordinator.released:
-	case <-time.After(time.Second):
-		t.Fatal("coordinator did not release capacity")
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		coordinator.mu.Lock()
+		got := coordinator.live
+		coordinator.mu.Unlock()
+		if got == want {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("live=%d want=%d", got, want)
+		}
 	}
 }
 

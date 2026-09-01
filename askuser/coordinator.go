@@ -20,7 +20,6 @@ type coordinator struct {
 	done      chan struct{}
 	doneOnce  sync.Once
 	clock     coordinatorClock
-	released  chan struct{}
 }
 
 type coordinatorClock interface {
@@ -53,10 +52,9 @@ type responseEnvelope struct {
 }
 
 type responseState struct {
-	mu        sync.Mutex
-	envelope  responseEnvelope
-	published bool
-	signal    chan struct{}
+	mu       sync.Mutex
+	envelope *responseEnvelope
+	done     chan struct{}
 }
 
 func newCoordinator(options canonicalOptions) *coordinator {
@@ -99,7 +97,7 @@ func (c *coordinator) ask(ctx context.Context, call runtime.ToolCall, input tool
 	for index, option := range input.Options {
 		request.Options[index] = Option{Label: option.Label, Description: option.Description}
 	}
-	state := &responseState{signal: make(chan struct{}, 1)}
+	state := &responseState{done: make(chan struct{})}
 	go c.runResponder(child, cancel, id, cloneRequest(request), state)
 
 	timer := c.clock.NewDeadlineTimer(deadline)
@@ -116,7 +114,7 @@ func (c *coordinator) ask(ctx context.Context, call runtime.ToolCall, input tool
 		case <-ctx.Done():
 			cancel()
 			return Result{}, ctx.Err()
-		case <-state.signal:
+		case <-state.done:
 		case <-timer.C():
 		}
 		if err := ctx.Err(); err != nil {
@@ -153,19 +151,18 @@ func (c *coordinator) runResponder(ctx context.Context, cancel context.CancelFun
 
 func (state *responseState) publish(envelope responseEnvelope) {
 	state.mu.Lock()
-	state.envelope = envelope
-	state.published = true
+	state.envelope = &envelope
 	state.mu.Unlock()
-	select {
-	case state.signal <- struct{}{}:
-	default:
-	}
+	close(state.done)
 }
 
 func (state *responseState) snapshot() (responseEnvelope, bool) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return state.envelope, state.published
+	if state.envelope == nil {
+		return responseEnvelope{}, false
+	}
+	return *state.envelope, true
 }
 
 func (c *coordinator) acquire(cancel context.CancelFunc) (uint64, bool) {
@@ -183,23 +180,15 @@ func (c *coordinator) acquire(cancel context.CancelFunc) (uint64, bool) {
 
 func (c *coordinator) release(id uint64) {
 	c.mu.Lock()
-	didRelease := false
 	if _, exists := c.cancels[id]; exists {
 		delete(c.cancels, id)
 		c.live--
-		didRelease = true
 	}
 	if c.closing && c.live == 0 {
 		c.closed = true
 		c.doneOnce.Do(func() { close(c.done) })
 	}
 	c.mu.Unlock()
-	if didRelease {
-		select {
-		case c.released <- struct{}{}:
-		default:
-		}
-	}
 }
 
 func (c *coordinator) Close(ctx context.Context) error {
@@ -248,7 +237,7 @@ func mapResponse(envelope responseEnvelope, input toolInput, limits Limits) (Res
 		}
 		return Result{Status: StatusSelected, Answer: input.Options[response.SelectedOption-1].Label, SelectedOption: response.SelectedOption}, nil
 	case ResponseCustom:
-		if response.SelectedOption != 0 || !validText(response.CustomAnswer, limits.MaxCustomAnswerBytes, true) {
+		if response.SelectedOption != 0 || !validRequiredText(response.CustomAnswer, limits.MaxCustomAnswerBytes) {
 			return Result{}, errResponderOperation
 		}
 		return Result{Status: StatusCustom, Answer: response.CustomAnswer}, nil

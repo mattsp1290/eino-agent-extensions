@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,12 @@ func resolveTestTool(t *testing.T, registry *composition.Registry, sessionID ses
 	return plan, resolved[0]
 }
 
+type schemaSubset struct {
+	AdditionalProperties *bool                   `json:"additionalProperties"`
+	Properties           map[string]schemaSubset `json:"properties"`
+	Items                *schemaSubset           `json:"items"`
+}
+
 func TestMountResolvesFrozenToolAndExecutes(t *testing.T) {
 	registry, mount := mountTestRegistry(t, testOptions())
 	plan, tool := resolveTestTool(t, registry, "session")
@@ -65,34 +72,28 @@ func TestMountResolvesFrozenToolAndExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rawSchema, _ := json.Marshal(schema)
+	rawSchema, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, required := range []string{`"minItems":2`, `"maxItems":5`} {
-		if !containsJSON(rawSchema, required) {
+		if !strings.Contains(string(rawSchema), required) {
 			t.Fatalf("resolved schema missing %s: %s", required, rawSchema)
 		}
 	}
-	var schemaDocument map[string]any
+	var schemaDocument schemaSubset
 	if err := json.Unmarshal(rawSchema, &schemaDocument); err != nil {
 		t.Fatal(err)
 	}
-	properties, ok := schemaDocument["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("schema properties = %#v", schemaDocument["properties"])
+	optionsSchema, ok := schemaDocument.Properties["options"]
+	if !ok || optionsSchema.Items == nil {
+		t.Fatalf("options schema = %#v", optionsSchema)
 	}
-	optionsSchema, ok := properties["options"].(map[string]any)
-	if !ok {
-		t.Fatalf("options schema = %#v", properties["options"])
-	}
-	optionItems, ok := optionsSchema["items"].(map[string]any)
-	if !ok {
-		t.Fatalf("option items = %#v", optionsSchema["items"])
-	}
-	for name, value := range map[string]any{
-		"top-level": schemaDocument["additionalProperties"],
-		"option":    optionItems["additionalProperties"],
+	for name, value := range map[string]*bool{
+		"top-level": schemaDocument.AdditionalProperties,
+		"option":    optionsSchema.Items.AdditionalProperties,
 	} {
-		closed, ok := value.(bool)
-		if !ok || closed {
+		if value == nil || *value {
 			t.Fatalf("%s additionalProperties = %#v, want false", name, value)
 		}
 	}
@@ -151,19 +152,6 @@ func TestMountSupportsExactSessionScopeAndExplicitOrder(t *testing.T) {
 	}
 }
 
-func containsJSON(raw []byte, fragment string) bool {
-	return len(raw) >= len(fragment) && stringContains(string(raw), fragment)
-}
-
-func stringContains(value, fragment string) bool {
-	for index := 0; index+len(fragment) <= len(value); index++ {
-		if value[index:index+len(fragment)] == fragment {
-			return true
-		}
-	}
-	return false
-}
-
 func TestMountRejectsInvalidIdentityAndConfiguration(t *testing.T) {
 	registry, err := composition.NewRegistry(nil)
 	if err != nil {
@@ -210,7 +198,7 @@ func TestMountedDecoderRejectsLossyUnicodeBeforeDurability(t *testing.T) {
 			if err == nil {
 				t.Fatalf("lossy input accepted as %s", canonical)
 			}
-			if stringContains(string(canonical), "�") {
+			if strings.Contains(string(canonical), "�") {
 				t.Fatalf("lossy replacement returned: %s", canonical)
 			}
 		})

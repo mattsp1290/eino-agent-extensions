@@ -111,7 +111,7 @@ func canonicalize(options Options) (canonicalOptions, error) {
 	if err := extension.ValidateScope(canonical.scope); err != nil {
 		return canonicalOptions{}, configError("scope")
 	}
-	if nilInterface(canonical.responder) {
+	if nilResponder(canonical.responder) {
 		return canonicalOptions{}, configError("responder-required")
 	}
 	if !validIdentity(canonical.responderIdentity) {
@@ -128,7 +128,7 @@ func canonicalize(options Options) (canonicalOptions, error) {
 	return canonical, nil
 }
 
-func nilInterface(value any) bool {
+func nilResponder(value Responder) bool {
 	if value == nil {
 		return true
 	}
