@@ -93,7 +93,7 @@ func TestUpstreamInvalidStructuredSkipsEntireTransformWaterfall(t *testing.T) {
 	}
 	selection := model.Selection{ProviderID: "invalid-provider", ModelID: "invalid-model"}
 	handle, err := orchestrator.Start(ctx, runtime.Request{
-		SessionID: "invalid-session", ParentID: "invalid-user", Input: []*einoschema.Message{einoschema.UserMessage("run")},
+		SessionID: "invalid-session", Message: runtime.UserMessage{Content: "run"},
 		Config: config.Snapshot{Agent: config.Agent{Name: "agent", Model: selection}, Model: selection, Metadata: map[string]string{"workspace_root": t.TempDir()}},
 	})
 	if err != nil {
