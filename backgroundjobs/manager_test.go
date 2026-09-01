@@ -1,6 +1,11 @@
 package backgroundjobs
 
-import "testing"
+import (
+	"errors"
+	"os"
+	"testing"
+	"time"
+)
 
 func TestManagerOpaqueIDAndSupervisorStatusContracts(t *testing.T) {
 	valid := "job_0123456789abcdef0123456789abcdef_0123456789abcdef"
@@ -22,5 +27,21 @@ func TestManagerOpaqueIDAndSupervisorStatusContracts(t *testing.T) {
 		if valid, _ := parseSupervisorStatus([]byte(raw), nil); valid {
 			t.Fatalf("malformed status accepted: %q", raw)
 		}
+	}
+}
+
+func TestWaitSupervisorReadyClosesReaderOnFailure(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitSupervisorReady(reader, time.Second); err == nil {
+		t.Fatal("empty readiness response accepted")
+	}
+	if err := reader.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("readiness reader remained open: %v", err)
 	}
 }

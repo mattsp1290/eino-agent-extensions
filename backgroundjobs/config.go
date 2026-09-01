@@ -64,8 +64,11 @@ type Limits struct {
 
 // Options describes one immutable background-job mount.
 type Options struct {
-	Scope         extension.Scope
-	Order         int
+	Scope extension.Scope
+	Order int
+	// ShellPath is an absolute path to a POSIX-compatible sh implementation
+	// that accepts -c. Compatibility is a host precondition; ShellIdentity
+	// must rotate whenever the executable's effective behavior changes.
 	ShellPath     string
 	ShellIdentity string
 	Environment   Environment

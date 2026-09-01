@@ -101,7 +101,7 @@ func TestIntegrationKillAndTimeoutThroughOrchestrator(t *testing.T) {
 	if timeoutJob.ID == "" || timeoutJob.TimeoutSeconds != 1 {
 		t.Fatalf("timeout receipt = %#v", timeoutJob)
 	}
-	time.Sleep(1200 * time.Millisecond)
+	waitIntegrationJobTerminal(t, registry, "lifecycle-session", "lifecycle-workspace", workspace, timeoutJob.ID)
 	phase = 6
 	runIntegrationRequest(t, orchestrator, "lifecycle-session", "status timeout", snapshot)
 	if timedOut.ID != timeoutJob.ID || timedOut.State != JobTimedOut || timedOut.ExitCode != nil {
@@ -164,7 +164,7 @@ func TestIntegrationRedactorSanitizesModelAndDurableStatusButNotManagerTail(t *t
 	workspace := t.TempDir()
 	snapshot := integrationSnapshot(workspace, "redactor-workspace")
 	runIntegrationRequest(t, orchestrator, "redactor-session", "start", snapshot)
-	time.Sleep(200 * time.Millisecond)
+	waitIntegrationJobTerminal(t, registry, "redactor-session", "redactor-workspace", workspace, receipt.ID)
 	phase = 2
 	runIntegrationRequest(t, orchestrator, "redactor-session", "status", snapshot)
 	if strings.Contains(modelStatusEnvelope, "RAW_BACKGROUND_MARKER") || !strings.Contains(modelStatusEnvelope, toolresultredactor.Placeholder) {

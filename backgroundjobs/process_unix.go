@@ -53,5 +53,7 @@ func signalProcessGroup(pgid int, signal os.Signal) error {
 	return syscall.Kill(-pgid, systemSignal)
 }
 
+func processGroupGone(err error) bool { return errors.Is(err, syscall.ESRCH) }
+
 func termSignal() os.Signal { return syscall.SIGTERM }
 func killSignal() os.Signal { return syscall.SIGKILL }

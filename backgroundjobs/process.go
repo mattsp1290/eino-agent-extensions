@@ -6,6 +6,8 @@ import (
 	"os/exec"
 )
 
+type processGroupSignaler func(int, os.Signal) error
+
 // The requested command is passed as an argument, never interpolated here.
 // FD 3 carries final status, FD 4 carries readiness, and FD 5 is the manager's
 // one-way launch gate. All are package-private and closed before nested exec.

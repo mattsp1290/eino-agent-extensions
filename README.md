@@ -14,9 +14,10 @@ and stderr tails, list jobs owned by the same session/workspace, or terminate a
 job. The live registry and raw tails are memory-only and disappear with the host
 process, although Eino durably retains settled tool inputs and short results.
 
-Every mount requires an explicit absolute shell path, a non-secret shell
-identity, a selected environment policy, a non-secret environment identity, and
-finite limits:
+Every mount requires an explicit absolute POSIX-compatible `sh` path that
+accepts `-c`, a non-secret shell identity, a selected environment policy, a
+non-secret environment identity, and finite limits. Shell compatibility is a
+host precondition:
 
 ```go
 mount, err := backgroundjobs.Mount(ctx, registry, component, backgroundjobs.Options{
@@ -166,7 +167,7 @@ construction.
 The transform point is an ordered waterfall, not an enforced terminal hook.
 When full-result notice protection is required, keep the redactor as the final
 `ToolResultTransformPoint` callback. A failing earlier transform skips the
-redactor, while a failing later transform makes Eino v0.1.3 restore the original
+redactor, while a failing later transform makes Eino v0.2.0 restore the original
 pre-waterfall result. Durable and model-visible settlement is generic in either
 case, but a trusted `ToolSettledPoint` observer can receive the original full
 result. Other native transforms must return sanitized success when full-result

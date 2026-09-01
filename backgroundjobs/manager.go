@@ -53,6 +53,7 @@ type manager struct {
 	closing  bool
 	closed   bool
 	starts   sync.WaitGroup
+	signal   processGroupSignaler
 }
 
 type job struct {
@@ -61,7 +62,6 @@ type job struct {
 	manager       *manager
 	id            string
 	owner         ownerKey
-	launchRoot    string
 	startedAt     time.Time
 	completedAt   time.Time
 	effectiveTime time.Duration
@@ -98,7 +98,12 @@ type job struct {
 }
 
 func newManager(options canonicalOptions) (*manager, error) {
-	result := &manager{options: options, jobs: make(map[string]*job), hidden: make(map[string]*job)}
+	result := &manager{
+		options: options,
+		jobs:    make(map[string]*job),
+		hidden:  make(map[string]*job),
+		signal:  signalProcessGroup,
+	}
 	if _, err := io.ReadFull(rand.Reader, result.epoch[:]); err != nil {
 		return nil, operationError("identity-unavailable")
 	}
@@ -124,7 +129,7 @@ func (manager *manager) start(ctx context.Context, owner ownerKey, workspaceRoot
 		}
 	}
 
-	root, directory, err := resolveWorkingDirectory(workspaceRoot, input.WorkingDirectory)
+	_, directory, err := resolveWorkingDirectory(workspaceRoot, input.WorkingDirectory)
 	if err != nil {
 		releaseReservation()
 		return StartResult{}, err
@@ -157,7 +162,7 @@ func (manager *manager) start(ctx context.Context, owner ownerKey, workspaceRoot
 	}
 	prepared.parentAfterStart()
 	job := &job{
-		manager: manager, id: id, owner: owner, launchRoot: root,
+		manager: manager, id: id, owner: owner,
 		startedAt: startedAt, effectiveTime: effective, state: JobRunning,
 		stdout: stdout, stderr: stderr, cmd: prepared.cmd, pgid: prepared.cmd.Process.Pid,
 		statusReady: make(chan struct{}), waitDone: make(chan struct{}), done: make(chan struct{}),
@@ -219,7 +224,6 @@ func (manager *manager) start(ctx context.Context, owner ownerKey, workspaceRoot
 			return StartResult{}, ctx.Err()
 		}
 		if readyErr != nil {
-			_ = prepared.readyReader.Close()
 			return StartResult{}, operationError("supervisor-readiness")
 		}
 		return StartResult{}, errManagerClosing
@@ -411,7 +415,12 @@ func (manager *manager) jobCompleted(job *job) {
 	manager.mu.Unlock()
 }
 
-func waitSupervisorReady(reader *os.File, limit time.Duration) error {
+func waitSupervisorReady(reader *os.File, limit time.Duration) (resultErr error) {
+	defer func() {
+		if err := reader.Close(); resultErr == nil && err != nil {
+			resultErr = operationError("supervisor-readiness")
+		}
+	}()
 	if err := reader.SetReadDeadline(time.Now().Add(limit)); err != nil {
 		return operationError("supervisor-readiness")
 	}
@@ -419,7 +428,7 @@ func waitSupervisorReady(reader *os.File, limit time.Duration) error {
 	if err != nil || string(raw) != "R" {
 		return operationError("supervisor-readiness")
 	}
-	return reader.Close()
+	return nil
 }
 
 func channelClosed(channel <-chan struct{}) bool {
@@ -519,7 +528,6 @@ func (job *job) coordinate(attempt chan struct{}) {
 	job.mu.Lock()
 	cause := job.cause
 	phase := job.phase
-	reaped := job.reaped
 	ready := job.ready
 	job.mu.Unlock()
 	completeAttempt := func() {
@@ -528,26 +536,21 @@ func (job *job) coordinate(attempt chan struct{}) {
 		close(attempt)
 		job.mu.Unlock()
 	}
-	if reaped && phase != phaseFinalSignalSent {
-		completeAttempt()
-		return
-	}
-
 	if cause != causeNatural && phase == phaseInitial && ready {
 		job.mu.Lock()
-		if job.reaped {
+		if err := job.manager.signal(job.pgid, termSignal()); err != nil && !processGroupGone(err) {
 			job.mu.Unlock()
 			completeAttempt()
 			return
+		} else if err != nil {
+			job.phase = phaseFinalSignalSent
+			job.finalSignalAt = time.Now()
+			phase = phaseFinalSignalSent
+		} else {
+			job.phase = phaseTermSent
+			phase = phaseTermSent
 		}
-		if err := signalProcessGroup(job.pgid, termSignal()); err != nil {
-			job.mu.Unlock()
-			completeAttempt()
-			return
-		}
-		job.phase = phaseTermSent
 		job.mu.Unlock()
-		phase = phaseTermSent
 	}
 	if cause != causeNatural && phase == phaseTermSent {
 		timer := time.NewTimer(job.manager.options.limits.TerminateGrace)
@@ -561,12 +564,7 @@ func (job *job) coordinate(attempt chan struct{}) {
 	}
 	if phase != phaseFinalSignalSent {
 		job.mu.Lock()
-		if job.reaped {
-			job.mu.Unlock()
-			completeAttempt()
-			return
-		}
-		if signalProcessGroup(job.pgid, killSignal()) != nil {
+		if err := job.manager.signal(job.pgid, killSignal()); err != nil && !processGroupGone(err) {
 			job.mu.Unlock()
 			completeAttempt()
 			return

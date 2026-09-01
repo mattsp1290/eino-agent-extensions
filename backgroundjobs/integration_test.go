@@ -120,7 +120,7 @@ func TestIntegrationStartPollDurabilityPermissionsAndFreshManager(t *testing.T) 
 		t.Fatalf("launch receipt = %#v content=%q durable-output=%s", launched, startContent, startCall.Output)
 	}
 
-	time.Sleep(2200 * time.Millisecond)
+	waitIntegrationJobTerminal(t, registry, "integration-session", "integration-workspace", workspace, launched.ID)
 	phase = 2
 	handle, err = orchestrator.Start(ctx, runtime.Request{SessionID: "integration-session", Message: runtime.UserMessage{Content: "poll"}, Config: snapshot})
 	if err != nil {
@@ -313,6 +313,47 @@ func waitIntegrationRun(t *testing.T, handle runtime.Handle) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("run timed out")
 	}
+}
+
+func waitIntegrationJobTerminal(t *testing.T, registry *composition.Registry, sessionID, workspaceID, workspace, id string) StatusResult {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	typedSessionID := session.ID(sessionID)
+	plan, err := registry.AcquireRunPlan(ctx, runtime.RunPlanRequest{SessionID: typedSessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.Release()
+	resolved, err := plan.ResolveTools(ctx, runtime.ToolScopeContext{SessionID: typedSessionID, WorkspaceID: workspaceID, WorkspaceRoot: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusTool := findIntegrationTool(t, resolved, StatusToolName)
+	rawID, _ := json.Marshal(map[string]string{"id": id})
+	canonicalID, err := statusTool.InputDecoder.DecodeToolInput(ctx, rawID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for ctx.Err() == nil {
+		output, executeErr := statusTool.Executor.Execute(ctx, runtime.ToolCall{
+			ID: session.ToolCallID("eventual-status"), SessionID: typedSessionID, Name: StatusToolName, Input: canonicalID,
+			Context: runtime.ToolContext{Turn: runtime.BoundedTurnMetadata{SessionID: typedSessionID}, WorkspaceID: workspaceID, WorkspaceRoot: workspace},
+		})
+		if executeErr != nil {
+			t.Fatal(executeErr)
+		}
+		var status StatusResult
+		if err := json.Unmarshal(output.Structured, &status); err != nil {
+			t.Fatal(err)
+		}
+		if status.State != JobRunning {
+			return status
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job %s did not become terminal: %v", id, ctx.Err())
+	return StatusResult{}
 }
 
 type integrationResolver struct{ streamer model.Streamer }

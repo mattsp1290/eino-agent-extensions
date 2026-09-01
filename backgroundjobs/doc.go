@@ -4,7 +4,8 @@
 // The tools are background_job_start, background_job_status,
 // background_job_list, and background_job_kill. A mount freezes an explicit
 // absolute shell, a non-secret shell identity, environment policy, finite
-// resource limits, and a required hard timeout. Explicit-only environment uses
+// resource limits, and a required finite maximum timeout. A per-job hard
+// deadline remains optional when the default timeout is zero. Explicit-only environment uses
 // only overrides; inherit-and-override snapshots the ambient environment once
 // and overlays overrides. The host must rotate the non-secret environment
 // identity after every effective environment change.

@@ -9,5 +9,6 @@ func prepareProcess(canonicalOptions, string, string, *tailWriter, *tailWriter) 
 }
 
 func signalProcessGroup(int, os.Signal) error { return configError("unsupported-platform") }
+func processGroupGone(error) bool             { return false }
 func termSignal() os.Signal                   { return nil }
 func killSignal() os.Signal                   { return nil }
