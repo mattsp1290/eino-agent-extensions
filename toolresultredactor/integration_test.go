@@ -535,8 +535,7 @@ func runAcceptance(t *testing.T, test acceptanceCase) acceptanceResult {
 	}
 	selection := model.Selection{ProviderID: "fixture-provider", ModelID: "fixture-model"}
 	handle, err := orchestrator.Start(ctx, runtime.Request{
-		SessionID: "fixture-session", ParentID: "fixture-user",
-		Input: []*einoschema.Message{einoschema.UserMessage("run fixture")},
+		SessionID: "fixture-session", Message: runtime.UserMessage{Content: "run fixture"},
 		Config: config.Snapshot{
 			Agent: config.Agent{Name: "fixture-agent", Model: selection}, Model: selection,
 			Metadata: map[string]string{"workspace_id": "fixture-workspace", "workspace_root": t.TempDir()},

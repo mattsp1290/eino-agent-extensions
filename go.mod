@@ -4,7 +4,8 @@ go 1.26.3
 
 require (
 	github.com/cloudwego/eino v0.8.13
-	github.com/mattsp1290/eino-agent v0.1.3
+	github.com/eino-contrib/jsonschema v1.0.3
+	github.com/mattsp1290/eino-agent v0.2.0
 )
 
 require (
@@ -15,7 +16,6 @@ require (
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/eino-contrib/jsonschema v1.0.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect

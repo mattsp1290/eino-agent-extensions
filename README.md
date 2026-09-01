@@ -2,8 +2,68 @@
 
 This repository contains focused extensions for
 [`github.com/mattsp1290/eino-agent`](https://github.com/mattsp1290/eino-agent).
-Its first package is a trusted native tool-result secret redactor verified
-against Eino Agent v0.1.3.
+It currently provides bounded background command jobs and a trusted native
+tool-result secret redactor, both verified against Eino Agent v0.2.0.
+
+## Bounded background command jobs
+
+`backgroundjobs` atomically mounts four tools: `background_job_start`,
+`background_job_status`, `background_job_list`, and `background_job_kill`.
+Start returns an opaque job ID promptly; callers poll status for bounded stdout
+and stderr tails, list jobs owned by the same session/workspace, or terminate a
+job. The live registry and raw tails are memory-only and disappear with the host
+process, although Eino durably retains settled tool inputs and short results.
+
+Every mount requires an explicit absolute POSIX-compatible `sh` path that
+accepts `-c`, a non-secret shell identity, a selected environment policy, a
+non-secret environment identity, and finite limits. Shell compatibility is a
+host precondition:
+
+```go
+mount, err := backgroundjobs.Mount(ctx, registry, component, backgroundjobs.Options{
+	ShellPath: "/bin/sh",
+	ShellIdentity: "host-system-sh-v1", // rotate when shell behavior changes
+	Environment: backgroundjobs.Environment{
+		Mode: backgroundjobs.EnvironmentExplicitOnly,
+		Identity: "background-env-v1", // rotate for every effective env change
+		Overrides: map[string]string{"PATH": "/usr/bin:/bin"},
+	},
+	Limits: backgroundjobs.Limits{
+		MaxRunning: 4, MaxTracked: 32,
+		MaxCommandBytes: 16 << 10, MaxWorkingDirectoryBytes: 4 << 10,
+		MaxOutputBytesPerStream: 256 << 10,
+		MaxEnvironmentEntries: 256, MaxEnvironmentBytes: 64 << 10,
+		DefaultTimeout: 0, MaxTimeout: 30 * time.Minute,
+		TerminateGrace: 2 * time.Second, KillWait: 5 * time.Second,
+	},
+})
+```
+
+Zero scope selects global registration, and zero order selects
+`backgroundjobs.DefaultOrder`; explicit nonzero values are preserved.
+
+`EnvironmentExplicitOnly` uses only the supplied overrides.
+`EnvironmentInheritAndOverride` snapshots the host environment once at mount
+and then applies overrides. Changing any inherited or override key/value without
+rotating `Environment.Identity` can make strict resume reuse a stale component
+identity. Environment values are never included in the component hash,
+permission patterns, list output, or package diagnostic errors.
+
+An omitted or zero `timeout_seconds` uses `DefaultTimeout`; a zero default means
+no automatic timeout. A positive per-job value replaces the default but cannot
+exceed the required whole-second `MaxTimeout`. Command text is canonical durable
+Eino input, so credentials must never be placed in a command. Output is a text-
+oriented suffix, not a complete transcript; mount `toolresultredactor` as the
+last result transform when process output may contain secrets.
+
+Linux and Darwin launches use a package supervisor that anchors the original
+POSIX process-group identity through TERM/KILL and is reaped before kill,
+timeout, or close succeeds. Other platforms reject the mount explicitly.
+Initial working-directory resolution follows symlinks and must remain beneath
+the host-admitted runtime workspace root. This is launch validation only—not a
+filesystem, network, credential, process, container, or operating-system
+sandbox. A command can still access absolute paths, use the network, or
+deliberately detach from the launched process group.
 
 ## Tool-result redactor
 
@@ -77,7 +137,7 @@ The transform scans `ToolResult.Output`, every string key and value in
 and attachment metadata. Non-string JSON values are preserved. Matching spans
 in values are replaced while unmatched content remains intact.
 
-After result transforms complete, Eino v0.1.3 may reapply its fixed,
+After result transforms complete, Eino v0.2.0 may reapply its fixed,
 runtime-owned `permission_status` metadata projection. That enum is not
 tool-controlled content and is outside host-pattern matching at this transform.
 
@@ -107,13 +167,13 @@ construction.
 The transform point is an ordered waterfall, not an enforced terminal hook.
 When full-result notice protection is required, keep the redactor as the final
 `ToolResultTransformPoint` callback. A failing earlier transform skips the
-redactor, while a failing later transform makes Eino v0.1.3 restore the original
+redactor, while a failing later transform makes Eino v0.2.0 restore the original
 pre-waterfall result. Durable and model-visible settlement is generic in either
 case, but a trusted `ToolSettledPoint` observer can receive the original full
 result. Other native transforms must return sanitized success when full-result
 notice protection is required.
 
-Non-empty syntactically invalid `Structured` JSON is rejected by Eino v0.1.3
+Non-empty syntactically invalid `Structured` JSON is rejected by Eino v0.2.0
 before any result transform runs. The redactor therefore cannot sanitize that
 result or its sibling fields. Durable/model-visible settlement is generic, but
 full-result observers remain trusted. This is outside the package's
