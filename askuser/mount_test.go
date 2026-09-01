@@ -66,9 +66,34 @@ func TestMountResolvesFrozenToolAndExecutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rawSchema, _ := json.Marshal(schema)
-	for _, required := range []string{`"minItems":2`, `"maxItems":5`, `"additionalProperties":false`} {
+	for _, required := range []string{`"minItems":2`, `"maxItems":5`} {
 		if !containsJSON(rawSchema, required) {
 			t.Fatalf("resolved schema missing %s: %s", required, rawSchema)
+		}
+	}
+	var schemaDocument map[string]any
+	if err := json.Unmarshal(rawSchema, &schemaDocument); err != nil {
+		t.Fatal(err)
+	}
+	properties, ok := schemaDocument["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", schemaDocument["properties"])
+	}
+	optionsSchema, ok := properties["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("options schema = %#v", properties["options"])
+	}
+	optionItems, ok := optionsSchema["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("option items = %#v", optionsSchema["items"])
+	}
+	for name, value := range map[string]any{
+		"top-level": schemaDocument["additionalProperties"],
+		"option":    optionItems["additionalProperties"],
+	} {
+		closed, ok := value.(bool)
+		if !ok || closed {
+			t.Fatalf("%s additionalProperties = %#v, want false", name, value)
 		}
 	}
 	input, err := tool.InputDecoder.DecodeToolInput(context.Background(), []byte(`{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}`))

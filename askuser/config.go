@@ -25,7 +25,7 @@ const (
 	resultSchemaVersion       = "ask-user-result-v1"
 	permissionVersion         = "interaction-ask-v1"
 	customChoiceVersion       = "custom-choice-v1"
-	registrationID            = "ask-user/ask"
+	registrationID            = ToolName
 )
 
 // Limits bounds all package-owned text, waiting, and concurrency. Every field

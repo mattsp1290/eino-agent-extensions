@@ -20,11 +20,12 @@ type coordinator struct {
 	done      chan struct{}
 	doneOnce  sync.Once
 	clock     coordinatorClock
+	released  chan struct{}
 }
 
 type coordinatorClock interface {
 	Now() time.Time
-	NewTimer(time.Duration) coordinatorTimer
+	NewDeadlineTimer(time.Time) coordinatorTimer
 }
 
 type coordinatorTimer interface {
@@ -36,8 +37,8 @@ type realCoordinatorClock struct{}
 
 func (realCoordinatorClock) Now() time.Time { return time.Now() }
 
-func (realCoordinatorClock) NewTimer(wait time.Duration) coordinatorTimer {
-	return realCoordinatorTimer{timer: time.NewTimer(wait)}
+func (realCoordinatorClock) NewDeadlineTimer(deadline time.Time) coordinatorTimer {
+	return realCoordinatorTimer{timer: time.NewTimer(time.Until(deadline))}
 }
 
 type realCoordinatorTimer struct{ timer *time.Timer }
@@ -101,7 +102,7 @@ func (c *coordinator) ask(ctx context.Context, call runtime.ToolCall, input tool
 	state := &responseState{signal: make(chan struct{}, 1)}
 	go c.runResponder(child, cancel, id, cloneRequest(request), state)
 
-	timer := c.clock.NewTimer(c.limits.MaxWait)
+	timer := c.clock.NewDeadlineTimer(deadline)
 	defer func() {
 		if !timer.Stop() {
 			select {
@@ -182,15 +183,23 @@ func (c *coordinator) acquire(cancel context.CancelFunc) (uint64, bool) {
 
 func (c *coordinator) release(id uint64) {
 	c.mu.Lock()
+	didRelease := false
 	if _, exists := c.cancels[id]; exists {
 		delete(c.cancels, id)
 		c.live--
+		didRelease = true
 	}
 	if c.closing && c.live == 0 {
 		c.closed = true
 		c.doneOnce.Do(func() { close(c.done) })
 	}
 	c.mu.Unlock()
+	if didRelease {
+		select {
+		case c.released <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (c *coordinator) Close(ctx context.Context) error {

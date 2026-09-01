@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -38,7 +39,7 @@ func (responder *deterministicResponder) Respond(ctx context.Context, request as
 	return askuser.Response{Kind: askuser.ResponseSelected, SelectedOption: 2}, nil
 }
 
-func askSyntheticQuestion(ctx context.Context) (askuser.Result, error) {
+func askSyntheticQuestion(ctx context.Context) (result askuser.Result, err error) {
 	registry, err := composition.NewRegistry(nil)
 	if err != nil {
 		return askuser.Result{}, err
@@ -65,7 +66,7 @@ func askSyntheticQuestion(ctx context.Context) (askuser.Result, error) {
 		mount.Deactivate()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = mount.Close(closeCtx)
+		err = errors.Join(err, mount.Close(closeCtx))
 	}()
 	plan, err := registry.AcquireRunPlan(ctx, runtime.RunPlanRequest{SessionID: "example-session"})
 	if err != nil {
@@ -90,7 +91,7 @@ func askSyntheticQuestion(ctx context.Context) (askuser.Result, error) {
 	if err != nil {
 		return askuser.Result{}, err
 	}
-	var result askuser.Result
+	result = askuser.Result{}
 	if err := json.Unmarshal(output.Structured, &result); err != nil {
 		return askuser.Result{}, err
 	}

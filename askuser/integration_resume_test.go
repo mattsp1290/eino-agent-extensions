@@ -169,16 +169,26 @@ func seedAskResumeRun(t *testing.T, descriptor session.ExtensionPlanDescriptor, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	leaseUntil := run.LeaseUntil
 	if status == session.ToolCallRunning {
-		if _, err := execution.ClaimToolCall(ctx, session.ClaimToolCallRequest{
+		claimed, err := execution.ClaimToolCall(ctx, session.ClaimToolCallRequest{
 			ID: created.Call.ID, ClaimedBy: "old-owner", ClaimToken: "old-tool-claim",
 			StartedAt: now, LeaseDuration: time.Millisecond,
 			Event: session.ToolTransitionEvent{ID: "resume-claim-event", CreatedAt: now},
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatal(err)
 		}
+		if claimed.Call.LeaseUntil.After(leaseUntil) {
+			leaseUntil = claimed.Call.LeaseUntil
+		}
 	}
-	time.Sleep(3 * time.Millisecond)
+	wait := time.Until(leaseUntil) + 10*time.Millisecond
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		<-timer.C
+	}
 	return database, run
 }
 

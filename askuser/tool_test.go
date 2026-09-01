@@ -130,6 +130,30 @@ func TestDefinitionSchemaPermissionAndRetention(t *testing.T) {
 	}
 }
 
+func TestRetentionBoundsWorstCaseEscapedResults(t *testing.T) {
+	canonical := canonicalOptionsForTest(t)
+	definition := definition(canonical, newCoordinator(canonical))
+	for name, result := range map[string]Result{
+		"selected": {
+			Status: StatusSelected, Answer: strings.Repeat("\x01", canonical.limits.MaxOptionLabelBytes), SelectedOption: 1,
+		},
+		"custom": {
+			Status: StatusCustom, Answer: strings.Repeat("\x01", canonical.limits.MaxCustomAnswerBytes),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retainedCopies := int64(len(encoded)) * 2
+			if retainedCopies > definition.Retention.MaxInlineBytes {
+				t.Fatalf("retained bytes=%d limit=%d", retainedCopies, definition.Retention.MaxInlineBytes)
+			}
+		})
+	}
+}
+
 func TestMapResponseValidatesAllShapes(t *testing.T) {
 	input := toolInput{Question: "Q", Options: []toolOption{{Label: "A"}, {Label: "B"}}}
 	limits := testLimits()

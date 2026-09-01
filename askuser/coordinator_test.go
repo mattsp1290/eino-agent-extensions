@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -84,6 +83,7 @@ func TestCoordinatorCapacityCountsResponderUntilExit(t *testing.T) {
 		limits.MaxInFlight = 1
 		limits.MaxWait = 20 * time.Millisecond
 	})
+	coordinator.released = make(chan struct{}, 1)
 	firstDone := make(chan Result, 1)
 	go func() {
 		result, _ := coordinator.ask(context.Background(), testCall("first"), testInput())
@@ -116,7 +116,7 @@ func TestCoordinatorCapacityCountsResponderUntilExit(t *testing.T) {
 		t.Fatalf("retained-capacity result=%#v calls=%d err=%v", third, calls.Load(), err)
 	}
 	close(release)
-	waitLive(t, coordinator, 0)
+	waitRelease(t, coordinator)
 	fourth, err := coordinator.ask(context.Background(), testCall("fourth"), testInput())
 	if err != nil || fourth.Status != StatusDismissed || calls.Load() != 2 {
 		t.Fatalf("released-capacity result=%#v calls=%d err=%v", fourth, calls.Load(), err)
@@ -262,6 +262,7 @@ func TestCoordinatorCompletionBoundaryIndependentOfSelectOrdering(t *testing.T) 
 			}), func(limits *Limits) { limits.MaxWait = 5 * time.Second })
 			clock := newBlockedClock()
 			coordinator.clock = clock
+			coordinator.released = make(chan struct{}, 1)
 			done := make(chan Result, 1)
 			go func() {
 				result, _ := coordinator.ask(context.Background(), testCall(name), testInput())
@@ -271,7 +272,7 @@ func TestCoordinatorCompletionBoundaryIndependentOfSelectOrdering(t *testing.T) 
 			<-clock.timerRequested
 			clock.set(clock.base.Add(5*time.Second + offset))
 			close(release)
-			waitLive(t, coordinator, 0) // publication precedes capacity release
+			waitRelease(t, coordinator) // publication precedes capacity release
 			clock.fire()
 			close(clock.allowTimer)
 			select {
@@ -290,21 +291,55 @@ func TestCoordinatorCompletionBoundaryIndependentOfSelectOrdering(t *testing.T) 
 	}
 }
 
-func waitLive(t *testing.T, coordinator *coordinator, want int) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for {
-		coordinator.mu.Lock()
-		got := coordinator.live
-		coordinator.mu.Unlock()
-		if got == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("live=%d want=%d", got, want)
-		}
-		runtime.Gosched()
+func TestCoordinatorMaxWaitIncludesSetupTime(t *testing.T) {
+	release := make(chan struct{})
+	coordinator := coordinatorWithResponder(t, ResponderFunc(func(context.Context, Request) (Response, error) {
+		<-release
+		return Response{Kind: ResponseDismissed}, nil
+	}), func(limits *Limits) { limits.MaxWait = 5 * time.Second })
+	clock := newDelayedTimerClock(6 * time.Second)
+	coordinator.clock = clock
+	coordinator.released = make(chan struct{}, 1)
+	result, err := coordinator.ask(context.Background(), testCall("delayed-setup"), testInput())
+	close(release)
+	waitRelease(t, coordinator)
+	if err != nil || result.Status != StatusTimedOut {
+		t.Fatalf("result=%#v err=%v", result, err)
 	}
+	if clock.requestedDeadline != clock.base.Add(5*time.Second) {
+		t.Fatalf("timer deadline=%v want=%v", clock.requestedDeadline, clock.base.Add(5*time.Second))
+	}
+}
+
+func waitRelease(t *testing.T, coordinator *coordinator) {
+	t.Helper()
+	select {
+	case <-coordinator.released:
+	case <-time.After(time.Second):
+		t.Fatal("coordinator did not release capacity")
+	}
+}
+
+type delayedTimerClock struct {
+	base              time.Time
+	now               time.Time
+	delay             time.Duration
+	requestedDeadline time.Time
+}
+
+func newDelayedTimerClock(delay time.Duration) *delayedTimerClock {
+	base := time.Now()
+	return &delayedTimerClock{base: base, now: base, delay: delay}
+}
+
+func (clock *delayedTimerClock) Now() time.Time { return clock.now }
+
+func (clock *delayedTimerClock) NewDeadlineTimer(deadline time.Time) coordinatorTimer {
+	clock.requestedDeadline = deadline
+	clock.now = clock.base.Add(clock.delay)
+	ready := make(chan time.Time, 1)
+	ready <- clock.now
+	return blockedTimer{ready}
 }
 
 type blockedClock struct {
@@ -337,7 +372,7 @@ func (clock *blockedClock) set(now time.Time) {
 	clock.mu.Unlock()
 }
 
-func (clock *blockedClock) NewTimer(time.Duration) coordinatorTimer {
+func (clock *blockedClock) NewDeadlineTimer(time.Time) coordinatorTimer {
 	clock.requestOnce.Do(func() { close(clock.timerRequested) })
 	<-clock.allowTimer
 	return blockedTimer{clock.timer}

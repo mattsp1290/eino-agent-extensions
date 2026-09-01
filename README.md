@@ -99,7 +99,9 @@ defer func() {
 	mount.Deactivate()
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = mount.Close(closeCtx)
+	if closeErr := mount.Close(closeCtx); closeErr != nil {
+		log.Printf("ask_user mount did not quiesce: %v", closeErr)
+	}
 }()
 ```
 
@@ -200,7 +202,9 @@ defer func() {
 	mount.Deactivate()
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = mount.Close(closeCtx)
+	if closeErr := mount.Close(closeCtx); closeErr != nil {
+		log.Printf("tool-result-redactor mount did not quiesce: %v", closeErr)
+	}
 }()
 ```
 
