@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Go from module
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Verify tidy module files
+        run: |
+          GOWORK=off go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Verify downloaded modules
+        run: GOWORK=off go mod verify
+      - name: Vet
+        run: GOWORK=off go vet ./...
+      - name: Test
+        run: GOWORK=off go test ./...
+      - name: Race test
+        run: GOWORK=off go test -race ./...
