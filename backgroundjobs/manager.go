@@ -1,19 +1,13 @@
 package backgroundjobs
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -22,24 +16,6 @@ type ownerKey struct {
 	sessionID   string
 	workspaceID string
 }
-
-type terminationCause uint8
-
-const (
-	causeNone terminationCause = iota
-	causeNatural
-	causeKill
-	causeTimeout
-	causeClose
-)
-
-type terminationPhase uint8
-
-const (
-	phaseInitial terminationPhase = iota
-	phaseTermSent
-	phaseFinalSignalSent
-)
 
 type manager struct {
 	mu       sync.Mutex
@@ -54,47 +30,6 @@ type manager struct {
 	closed   bool
 	starts   sync.WaitGroup
 	signal   processGroupSignaler
-}
-
-type job struct {
-	mu sync.Mutex
-
-	manager       *manager
-	id            string
-	owner         ownerKey
-	startedAt     time.Time
-	completedAt   time.Time
-	effectiveTime time.Duration
-	state         JobState
-	exitCode      *int
-	stdout        *tailWriter
-	stderr        *tailWriter
-	cmd           *exec.Cmd
-	pgid          int
-	published     bool
-	counted       bool
-	ready         bool
-
-	statusReady   chan struct{}
-	waitDone      chan struct{}
-	done          chan struct{}
-	statusOnce    sync.Once
-	waitErr       error
-	reaped        bool
-	statusValid   bool
-	statusCode    int
-	outputForced  bool
-	finalSignalAt time.Time
-	timer         *time.Timer
-	timeoutDone   chan struct{}
-	timeoutOnce   sync.Once
-	goroutines    sync.WaitGroup
-
-	cause              terminationCause
-	phase              terminationPhase
-	coordinatorRunning bool
-	attemptDone        chan struct{}
-	terminalOnce       sync.Once
 }
 
 func newManager(options canonicalOptions) (*manager, error) {
@@ -128,14 +63,13 @@ func (manager *manager) start(ctx context.Context, owner ownerKey, workspaceRoot
 			reservationOwned = false
 		}
 	}
+	defer releaseReservation()
 
 	_, directory, err := resolveWorkingDirectory(workspaceRoot, input.WorkingDirectory)
 	if err != nil {
-		releaseReservation()
 		return StartResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		releaseReservation()
 		return StartResult{}, err
 	}
 	effective := manager.options.limits.DefaultTimeout
@@ -146,18 +80,15 @@ func (manager *manager) start(ctx context.Context, owner ownerKey, workspaceRoot
 	stderr := newTailWriter(manager.options.limits.MaxOutputBytesPerStream)
 	prepared, err := prepareProcess(manager.options, directory, input.Command, stdout, stderr)
 	if err != nil {
-		releaseReservation()
 		return StartResult{}, operationError("spawn-failed")
 	}
 	if err := ctx.Err(); err != nil {
 		prepared.closeBeforeStart()
-		releaseReservation()
 		return StartResult{}, err
 	}
 	startedAt := time.Now().UTC()
 	if err := prepared.cmd.Start(); err != nil {
 		prepared.closeBeforeStart()
-		releaseReservation()
 		return StartResult{}, operationError("spawn-failed")
 	}
 	prepared.parentAfterStart()
@@ -415,22 +346,6 @@ func (manager *manager) jobCompleted(job *job) {
 	manager.mu.Unlock()
 }
 
-func waitSupervisorReady(reader *os.File, limit time.Duration) (resultErr error) {
-	defer func() {
-		if err := reader.Close(); resultErr == nil && err != nil {
-			resultErr = operationError("supervisor-readiness")
-		}
-	}()
-	if err := reader.SetReadDeadline(time.Now().Add(limit)); err != nil {
-		return operationError("supervisor-readiness")
-	}
-	raw, err := io.ReadAll(io.LimitReader(reader, 2))
-	if err != nil || string(raw) != "R" {
-		return operationError("supervisor-readiness")
-	}
-	return nil
-}
-
 func channelClosed(channel <-chan struct{}) bool {
 	select {
 	case <-channel:
@@ -438,259 +353,4 @@ func channelClosed(channel <-chan struct{}) bool {
 	default:
 		return false
 	}
-}
-
-func (job *job) startCoordination(statusReader io.ReadCloser) {
-	job.goroutines.Add(2)
-	go func() {
-		defer job.goroutines.Done()
-		job.readStatus(statusReader)
-	}()
-	go func() {
-		defer job.goroutines.Done()
-		err := job.cmd.Wait()
-		job.mu.Lock()
-		waitDelayElapsed := !job.finalSignalAt.IsZero() && time.Since(job.finalSignalAt) >= job.manager.options.limits.KillWait-job.manager.options.limits.KillWait/20
-		if errors.Is(err, exec.ErrWaitDelay) || waitDelayElapsed {
-			job.stdout.markTruncated()
-			job.stderr.markTruncated()
-		}
-		job.waitErr = err
-		job.outputForced = errors.Is(err, exec.ErrWaitDelay) || waitDelayElapsed
-		job.cmd = nil
-		job.reaped = true
-		close(job.waitDone)
-		finalize := job.phase == phaseFinalSignalSent && job.cause != causeNone
-		job.mu.Unlock()
-		if finalize {
-			job.finishTerminal()
-		}
-	}()
-}
-
-func (job *job) readStatus(reader io.ReadCloser) {
-	defer reader.Close()
-	limited := bufio.NewReader(io.LimitReader(reader, 65))
-	raw, err := io.ReadAll(limited)
-	valid, code := parseSupervisorStatus(raw, err)
-	job.mu.Lock()
-	job.statusValid = valid
-	job.statusCode = code
-	job.statusOnce.Do(func() { close(job.statusReady) })
-	if job.cause == causeNone {
-		job.cause = causeNatural
-		job.startCoordinatorLocked()
-	}
-	job.mu.Unlock()
-}
-
-func parseSupervisorStatus(raw []byte, readErr error) (bool, int) {
-	if readErr != nil || len(raw) < 5 || len(raw) > 8 || !strings.HasPrefix(string(raw), "v1:") || raw[len(raw)-1] != '\n' {
-		return false, 0
-	}
-	value := string(raw[3 : len(raw)-1])
-	if value == "" || (len(value) > 1 && value[0] == '0') {
-		return false, 0
-	}
-	code, err := strconv.Atoi(value)
-	return err == nil && code >= 0 && code <= 255, code
-}
-
-func (job *job) beginTermination(cause terminationCause) (bool, <-chan struct{}) {
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	if job.state != JobRunning {
-		return false, job.done
-	}
-	newly := false
-	if job.cause == causeNone {
-		job.cause = cause
-		newly = true
-	}
-	if !job.coordinatorRunning {
-		job.startCoordinatorLocked()
-	}
-	return newly, job.attemptDone
-}
-
-func (job *job) startCoordinatorLocked() {
-	job.coordinatorRunning = true
-	job.attemptDone = make(chan struct{})
-	attempt := job.attemptDone
-	job.goroutines.Add(1)
-	go func() {
-		defer job.goroutines.Done()
-		job.coordinate(attempt)
-	}()
-}
-
-func (job *job) coordinate(attempt chan struct{}) {
-	job.mu.Lock()
-	cause := job.cause
-	phase := job.phase
-	ready := job.ready
-	job.mu.Unlock()
-	completeAttempt := func() {
-		job.mu.Lock()
-		job.coordinatorRunning = false
-		close(attempt)
-		job.mu.Unlock()
-	}
-	if cause != causeNatural && phase == phaseInitial && ready {
-		job.mu.Lock()
-		if err := job.manager.signal(job.pgid, termSignal()); err != nil && !processGroupGone(err) {
-			job.mu.Unlock()
-			completeAttempt()
-			return
-		} else if err != nil {
-			job.phase = phaseFinalSignalSent
-			job.finalSignalAt = time.Now()
-			phase = phaseFinalSignalSent
-		} else {
-			job.phase = phaseTermSent
-			phase = phaseTermSent
-		}
-		job.mu.Unlock()
-	}
-	if cause != causeNatural && phase == phaseTermSent {
-		timer := time.NewTimer(job.manager.options.limits.TerminateGrace)
-		select {
-		case <-job.statusReady:
-			if !timer.Stop() {
-				<-timer.C
-			}
-		case <-timer.C:
-		}
-	}
-	if phase != phaseFinalSignalSent {
-		job.mu.Lock()
-		if err := job.manager.signal(job.pgid, killSignal()); err != nil && !processGroupGone(err) {
-			job.mu.Unlock()
-			completeAttempt()
-			return
-		}
-		job.phase = phaseFinalSignalSent
-		job.finalSignalAt = time.Now()
-		job.mu.Unlock()
-	}
-
-	timer := time.NewTimer(job.manager.options.limits.KillWait)
-	select {
-	case <-job.waitDone:
-		if !timer.Stop() {
-			<-timer.C
-		}
-		job.finishTerminal()
-	case <-timer.C:
-		completeAttempt()
-	}
-}
-
-func (job *job) finishTerminal() {
-	job.terminalOnce.Do(func() {
-		job.mu.Lock()
-		if job.timer != nil {
-			if job.timer.Stop() {
-				job.timeoutOnce.Do(func() { close(job.timeoutDone) })
-			}
-		}
-		switch job.cause {
-		case causeKill, causeClose:
-			job.state = JobKilled
-		case causeTimeout:
-			job.state = JobTimedOut
-		case causeNatural:
-			if job.statusValid && !job.outputForced {
-				code := job.statusCode
-				job.exitCode = &code
-				if code == 0 {
-					job.state = JobSucceeded
-				} else {
-					job.state = JobFailed
-				}
-			} else {
-				job.state = JobFailed
-			}
-		}
-		job.completedAt = time.Now().UTC()
-		job.coordinatorRunning = false
-		job.mu.Unlock()
-		job.manager.jobCompleted(job)
-		job.mu.Lock()
-		close(job.done)
-		job.mu.Unlock()
-	})
-}
-
-func (job *job) startResult() StartResult {
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	return StartResult{ID: job.id, State: job.state, StartedAt: formatTime(job.startedAt), TimeoutSeconds: int64(job.effectiveTime / time.Second)}
-}
-
-func (job *job) statusResult() StatusResult {
-	job.mu.Lock()
-	result := StatusResult{
-		ID: job.id, State: job.state, StartedAt: formatTime(job.startedAt),
-		TimeoutSeconds: int64(job.effectiveTime / time.Second),
-	}
-	if !job.completedAt.IsZero() {
-		result.CompletedAt = formatTime(job.completedAt)
-	}
-	if job.exitCode != nil {
-		code := *job.exitCode
-		result.ExitCode = &code
-	}
-	job.mu.Unlock()
-	result.Stdout = job.stdout.snapshot()
-	result.Stderr = job.stderr.snapshot()
-	return result
-}
-
-func (job *job) summary() JobSummary {
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	result := JobSummary{ID: job.id, State: job.state, StartedAt: formatTime(job.startedAt), TimeoutSeconds: int64(job.effectiveTime / time.Second)}
-	if !job.completedAt.IsZero() {
-		result.CompletedAt = formatTime(job.completedAt)
-	}
-	return result
-}
-
-func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
-
-func resolveWorkingDirectory(workspaceRoot, relative string) (string, string, error) {
-	if workspaceRoot == "" {
-		return "", "", runtimeError("workspace-root")
-	}
-	root, err := filepath.Abs(filepath.Clean(workspaceRoot))
-	if err != nil {
-		return "", "", runtimeError("workspace-root")
-	}
-	root, err = filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", "", runtimeError("workspace-root")
-	}
-	rootInfo, err := filepath.Abs(filepath.Clean(root))
-	if err != nil {
-		return "", "", runtimeError("workspace-root")
-	}
-	target := filepath.Join(rootInfo, relative)
-	target, err = filepath.Abs(filepath.Clean(target))
-	if err != nil {
-		return "", "", runtimeError("working-directory")
-	}
-	target, err = filepath.EvalSymlinks(target)
-	if err != nil {
-		return "", "", runtimeError("working-directory")
-	}
-	rel, err := filepath.Rel(rootInfo, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", "", runtimeError("working-directory")
-	}
-	info, err := os.Stat(target)
-	if err != nil || !info.IsDir() {
-		return "", "", runtimeError("working-directory")
-	}
-	return rootInfo, target, nil
 }
