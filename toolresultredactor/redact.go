@@ -22,7 +22,7 @@ const (
 
 type compiledPolicy struct {
 	limits   Limits
-	rules    []compiledRule
+	rules    []matcher
 	excluded map[string]struct{}
 }
 
@@ -76,13 +76,14 @@ func (p *compiledPolicy) redactChecked(ctx context.Context, input runtime.ToolRe
 		return fullyPlaceholderized(input)
 	}
 
-	output.Metadata, state = p.scanMetadata(ctx, input.Metadata)
-	if state == scanCanceled {
+	var canceled bool
+	output.Metadata, canceled = p.scanMetadata(ctx, input.Metadata)
+	if canceled {
 		return fullyPlaceholderized(input)
 	}
 
-	output.Attachments, state = p.scanAttachments(ctx, input.Attachments)
-	if state == scanCanceled {
+	output.Attachments, canceled = p.scanAttachments(ctx, input.Attachments)
+	if canceled {
 		return fullyPlaceholderized(input)
 	}
 	if ctx.Err() != nil {
@@ -112,7 +113,7 @@ func (p *compiledPolicy) scanScalar(ctx context.Context, value string) (string, 
 		if remaining < len(value) {
 			queryLimit = remaining + 1
 		}
-		found := rule.matcher.find(value, queryLimit)
+		found := rule.find(value, queryLimit)
 		if len(found) > remaining {
 			return Placeholder, scanUnsafe
 		}
@@ -138,66 +139,67 @@ func (p *compiledPolicy) scanScalar(ctx context.Context, value string) (string, 
 	return result.String(), scanChanged
 }
 
-func (p *compiledPolicy) scanMetadata(ctx context.Context, input map[string]string) (map[string]string, scanState) {
+func (p *compiledPolicy) scanMetadata(ctx context.Context, input map[string]string) (map[string]string, bool) {
 	if input == nil {
-		return nil, scanUnchanged
+		return nil, false
 	}
 	if len(input) > p.limits.MaxMetadataEntries {
-		return metadataPlaceholder(), scanUnsafe
+		return metadataPlaceholder(), false
 	}
 	output := make(map[string]string, len(input))
 	for key, value := range input {
 		_, keyState := p.scanScalar(ctx, key)
 		if keyState == scanCanceled {
-			return metadataPlaceholder(), scanCanceled
+			return metadataPlaceholder(), true
 		}
 		if keyState != scanUnchanged {
-			return metadataPlaceholder(), scanUnsafe
+			return metadataPlaceholder(), false
 		}
 		redacted, valueState := p.scanScalar(ctx, value)
 		if valueState == scanCanceled {
-			return metadataPlaceholder(), scanCanceled
+			return metadataPlaceholder(), true
 		}
 		output[key] = redacted
 	}
-	return output, scanUnchanged
+	return output, false
 }
 
-func (p *compiledPolicy) scanAttachments(ctx context.Context, input []runtime.Attachment) ([]runtime.Attachment, scanState) {
+func (p *compiledPolicy) scanAttachments(ctx context.Context, input []runtime.Attachment) ([]runtime.Attachment, bool) {
 	if input == nil {
-		return nil, scanUnchanged
+		return nil, false
 	}
 	if len(input) > p.limits.MaxAttachments {
-		return attachmentPlaceholder(), scanUnsafe
+		return attachmentPlaceholder(), false
 	}
 	output := make([]runtime.Attachment, len(input))
 	for index, attachment := range input {
 		if ctx.Err() != nil {
-			return attachmentPlaceholder(), scanCanceled
+			return attachmentPlaceholder(), true
 		}
 		var state scanState
 		output[index].ID, state = p.scanScalar(ctx, attachment.ID)
 		if state == scanCanceled {
-			return attachmentPlaceholder(), scanCanceled
+			return attachmentPlaceholder(), true
 		}
 		output[index].MIMEType, state = p.scanScalar(ctx, attachment.MIMEType)
 		if state == scanCanceled {
-			return attachmentPlaceholder(), scanCanceled
+			return attachmentPlaceholder(), true
 		}
 		output[index].Name, state = p.scanScalar(ctx, attachment.Name)
 		if state == scanCanceled {
-			return attachmentPlaceholder(), scanCanceled
+			return attachmentPlaceholder(), true
 		}
 		output[index].URL, state = p.scanScalar(ctx, attachment.URL)
 		if state == scanCanceled {
-			return attachmentPlaceholder(), scanCanceled
+			return attachmentPlaceholder(), true
 		}
-		output[index].Metadata, state = p.scanMetadata(ctx, attachment.Metadata)
-		if state == scanCanceled {
-			return attachmentPlaceholder(), scanCanceled
+		var canceled bool
+		output[index].Metadata, canceled = p.scanMetadata(ctx, attachment.Metadata)
+		if canceled {
+			return attachmentPlaceholder(), true
 		}
 	}
-	return output, scanUnchanged
+	return output, false
 }
 
 func fullyPlaceholderized(input runtime.ToolResult) runtime.ToolResult {

@@ -14,11 +14,6 @@ type matcher interface {
 	find(string, int) []byteRange
 }
 
-type compiledRule struct {
-	id      string
-	matcher matcher
-}
-
 type regexpMatcher struct {
 	expression *regexp.Regexp
 }
@@ -62,23 +57,23 @@ func (m boundaryMatcher) find(value string, limit int) []byteRange {
 	return ranges
 }
 
-func compileRules(patterns []Pattern) ([]compiledRule, error) {
+func compileRules(patterns []Pattern) ([]matcher, error) {
 	rules := builtinRules()
 	for _, pattern := range patterns {
 		expression, err := regexp.Compile(pattern.Expression)
 		if err != nil {
 			return nil, patternError(pattern.ID, "invalid-expression")
 		}
-		rules = append(rules, compiledRule{id: pattern.ID, matcher: regexpMatcher{expression: expression}})
+		rules = append(rules, regexpMatcher{expression: expression})
 	}
 	return rules, nil
 }
 
-func builtinRules() []compiledRule {
-	return []compiledRule{
-		{id: "pem-private-key-block", matcher: regexpMatcher{expression: regexp.MustCompile(`(?ms)^-----BEGIN PRIVATE KEY-----\r?$.*?^-----END PRIVATE KEY-----\r?$`)}},
-		{id: "pem-private-key-block", matcher: regexpMatcher{expression: regexp.MustCompile(`(?ms)^-----BEGIN ENCRYPTED PRIVATE KEY-----\r?$.*?^-----END ENCRYPTED PRIVATE KEY-----\r?$`)}},
-		{id: "authorization-bearer", matcher: boundaryMatcher{
+func builtinRules() []matcher {
+	return []matcher{
+		regexpMatcher{expression: regexp.MustCompile(`(?ms)^-----BEGIN PRIVATE KEY-----\r?$.*?^-----END PRIVATE KEY-----\r?$`)},
+		regexpMatcher{expression: regexp.MustCompile(`(?ms)^-----BEGIN ENCRYPTED PRIVATE KEY-----\r?$.*?^-----END ENCRYPTED PRIVATE KEY-----\r?$`)},
+		boundaryMatcher{
 			expression: regexp.MustCompile(`[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][\t ]*:[\t ]*[Bb][Ee][Aa][Rr][Ee][Rr][ ]+[A-Za-z0-9\-._~+/]+={0,}`),
 			leftByte: func(value byte) bool {
 				return value == '_' || value == '-' || value >= '0' && value <= '9' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
@@ -86,13 +81,13 @@ func builtinRules() []compiledRule {
 			rightByte: func(value byte) bool {
 				return value == '-' || value == '.' || value == '_' || value == '~' || value == '+' || value == '/' || value == '=' || value >= '0' && value <= '9' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
 			},
-		}},
-		{id: "github-stateless-installation-token", matcher: boundaryMatcher{
+		},
+		boundaryMatcher{
 			expression: regexp.MustCompile(`ghs_[0-9]+_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`),
 			leftByte:   githubStatelessTokenByte,
 			rightByte:  githubStatelessTokenByte,
-		}},
-		{id: "github-prefixed-token", matcher: boundaryMatcher{
+		},
+		boundaryMatcher{
 			expression: regexp.MustCompile(`(?:ghp_|github_pat_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{16,}`),
 			leftByte: func(value byte) bool {
 				return value == '_' || value >= '0' && value <= '9' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
@@ -100,7 +95,7 @@ func builtinRules() []compiledRule {
 			rightByte: func(value byte) bool {
 				return value == '_' || value >= '0' && value <= '9' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
 			},
-		}},
+		},
 	}
 }
 

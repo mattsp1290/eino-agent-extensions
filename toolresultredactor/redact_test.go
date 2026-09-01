@@ -139,10 +139,10 @@ func TestCancellationAndPanicFallbackNeverReturnUnprovenContent(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	canceling := &compiledPolicy{limits: testLimits(), rules: []compiledRule{{id: "cancel", matcher: matcherFunc(func(string, int) []byteRange {
+	canceling := &compiledPolicy{limits: testLimits(), rules: []matcher{matcherFunc(func(string, int) []byteRange {
 		cancel()
 		return nil
-	})}}}
+	})}}
 	output := canceling.redact(ctx, input)
 	assertFullyPlaceholderized(t, output)
 
@@ -156,21 +156,21 @@ func TestCancellationAndPanicFallbackNeverReturnUnprovenContent(t *testing.T) {
 	}
 	before := append([]byte(nil), mustJSON(t, structuredInput)...)
 	structuredCtx, structuredCancel := context.WithCancel(context.Background())
-	structuredPolicy := &compiledPolicy{limits: testLimits(), rules: []compiledRule{{id: "cancel-structured", matcher: matcherFunc(func(value string, _ int) []byteRange {
+	structuredPolicy := &compiledPolicy{limits: testLimits(), rules: []matcher{matcherFunc(func(value string, _ int) []byteRange {
 		if value == "two" {
 			structuredCancel()
 		}
 		return nil
-	})}}}
+	})}}
 	output = structuredPolicy.redact(structuredCtx, structuredInput)
 	assertFullyPlaceholderized(t, output)
 	if !bytes.Equal(before, mustJSON(t, structuredInput)) {
 		t.Fatalf("structured cancellation mutated input")
 	}
 
-	panicking := &compiledPolicy{limits: testLimits(), rules: []compiledRule{{id: "panic", matcher: matcherFunc(func(string, int) []byteRange {
+	panicking := &compiledPolicy{limits: testLimits(), rules: []matcher{matcherFunc(func(string, int) []byteRange {
 		panic("fixture matcher panic")
-	})}}}
+	})}}
 	output = panicking.redact(context.Background(), input)
 	assertFullyPlaceholderized(t, output)
 }
