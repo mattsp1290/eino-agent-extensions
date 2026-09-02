@@ -2,8 +2,9 @@
 
 This repository contains focused extensions for
 [`github.com/mattsp1290/eino-agent`](https://github.com/mattsp1290/eino-agent).
-It currently provides bounded background command jobs and a trusted native
-tool-result secret redactor, both verified against Eino Agent v0.2.0.
+It currently provides bounded background command jobs, a host-mediated
+`ask_user` tool, and a trusted native tool-result secret redactor, all verified
+against Eino Agent v0.2.0.
 
 ## Bounded background command jobs
 
@@ -65,6 +66,94 @@ filesystem, network, credential, process, container, or operating-system
 sandbox. A command can still access absolute paths, use the network, or
 deliberately detach from the launched process group.
 
+## Host-mediated ask-user tool
+
+`github.com/mattsp1290/eino-agent-extensions/askuser` atomically mounts one
+`ask_user` tool. It lets a model ask one question with two through five fixed,
+ordered options; every question also has the package-owned
+`Other (write your own answer)` choice. The host supplies the
+presentation-neutral responder and owns UI, routing, authentication,
+notifications, host-side persistence, and adapter lifecycle.
+
+```go
+mount, err := askuser.Mount(ctx, registry, component, askuser.Options{
+	Responder: askuser.ResponderFunc(func(ctx context.Context, request askuser.Request) (askuser.Response, error) {
+		// Route by request.SessionID, request.RunID, and request.ToolCallID.
+		// A fixed selection is one-based.
+		return askuser.Response{Kind: askuser.ResponseSelected, SelectedOption: 1}, nil
+	}),
+	ResponderIdentity: "host-question-router-v1", // rotate with routing behavior
+	Limits: askuser.Limits{
+		MaxQuestionBytes: 4 << 10,
+		MaxOptionLabelBytes: 512,
+		MaxOptionDescriptionBytes: 2 << 10,
+		MaxCustomAnswerBytes: 4 << 10,
+		MaxInFlight: 8,
+		MaxWait: 2 * time.Minute,
+	},
+})
+if err != nil {
+	return err
+}
+defer func() {
+	mount.Deactivate()
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if closeErr := mount.Close(closeCtx); closeErr != nil {
+		log.Printf("ask_user mount did not quiesce: %v", closeErr)
+	}
+}()
+```
+
+All limits and `ResponderIdentity` are required. Zero scope means global scope,
+and zero order uses `askuser.DefaultOrder`. The responder receives a defensive
+copy of the normalized question and options, durable call identities,
+`AllowCustom=true`, and the fixed custom-choice label. `Respond` calls can
+overlap up to `MaxInFlight`; adapters must be concurrency-safe and route every
+response using the supplied IDs.
+
+| Status | Meaning | Tool error? |
+| --- | --- | --- |
+| `selected` | A fixed option was chosen. | no |
+| `custom` | A bounded free-form answer was supplied. | no |
+| `dismissed` | The person declined the question. | no |
+| `unavailable` | Presentation is unavailable or capacity is full. | no |
+| `timed_out` | `MaxWait` expired while the run remained active. | no |
+
+Capacity admission does not queue. `MaxInFlight` counts responder callbacks
+until they actually exit, even after a tool caller times out. `MaxWait` bounds
+the tool's wait, not arbitrary host code: Go cannot forcibly terminate a
+non-cooperative responder, and such a callback may retain its bounded slot and
+delay close. Responders must honor cancellation to remove presentation
+promptly. Parent cancellation observed during classification wins; otherwise a
+response completed strictly before the package deadline wins, while completion
+at or after the deadline is `timed_out`.
+
+The tool requests only the stable `interaction.ask` permission with the same
+constant permission pattern. The host must allow it or provide Eino approval
+handling. Denial and approval-required settlement happens before responder
+admission and never calls the responder. Parent cancellation remains
+cancellation, and responder errors, invalid responses, and panics are sanitized
+tool failures. A responder error that merely wraps `context.Canceled` or
+`context.DeadlineExceeded` does not acquire sentinel identity while the actual
+parent and package deadline sources are inactive.
+
+Eino durably stores the question, fixed options, and selected or custom answer,
+and exposes normal results to the next model turn. Never collect credentials or
+secrets with this tool. A result redactor can provide defense in depth for
+output but cannot erase the already durable tool input. Pending calls may run
+once after Eino claims them during resume; calls already marked running are
+interrupted without re-prompting. Limit or `ResponderIdentity` changes alter the
+exact-plan fingerprint and can reject resume, so drain unfinished runs before
+upgrading or removing the component.
+
+This package is trusted in-process native code. It supplies no terminal, web,
+AG-UI, or other built-in presentation, performs no transport or storage work of
+its own, and claims no Wasm or Pi/comparator parity. See
+[`examples/ask-user`](examples/ask-user) for a deterministic, non-interactive
+host adapter; package integration tests cover the full orchestrator/SQLite
+path.
+
 ## Tool-result redactor
 
 `toolresultredactor` mounts one ordered transform at
@@ -113,7 +202,9 @@ defer func() {
 	mount.Deactivate()
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = mount.Close(closeCtx)
+	if closeErr := mount.Close(closeCtx); closeErr != nil {
+		log.Printf("tool-result-redactor mount did not quiesce: %v", closeErr)
+	}
 }()
 ```
 
