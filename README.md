@@ -2,9 +2,122 @@
 
 This repository contains focused extensions for
 [`github.com/mattsp1290/eino-agent`](https://github.com/mattsp1290/eino-agent).
-It currently provides bounded background command jobs, a host-mediated
-`ask_user` tool, and a trusted native tool-result secret redactor, all verified
-against Eino Agent v0.2.0.
+It currently provides a session-scoped Python REPL, bounded background command
+jobs, a host-mediated `ask_user` tool, and a trusted native tool-result secret
+redactor, all verified against Eino Agent v0.2.0.
+
+## Session-scoped Python REPL
+
+`pythonrepl` atomically mounts `python_repl` and `python_repl_clear`. The first
+tool executes bounded Python input in an interpreter owned by the durable
+session/workspace pair; the second discards that owner's live interpreter state
+without eagerly starting a replacement. Both tools are retry-unsafe and request
+the constant permissions `process.python.execute` and
+`process.python.manage`, respectively.
+
+The host must supply an absolute Python 3.11-3.14 executable on Linux or macOS,
+a behavior identity for that build, an existing temporary root, an explicit
+environment plus non-secret environment identity, and finite limits:
+
+```go
+mount, err := pythonrepl.Mount(ctx, registry, component, pythonrepl.Options{
+	PythonPath: "/absolute/path/to/python3.12",
+	PythonIdentity: "host-python-3.12-build-v1", // rotate with build behavior
+	TempRoot: "/absolute/trusted/temp/root",
+	Environment: pythonrepl.Environment{
+		Identity: "python-env-v1", // rotate for every effective value change
+		Entries: map[string]string{"LANG": "C.UTF-8"},
+	},
+	Limits: pythonrepl.Limits{
+		MaxSessions: 8, MaxQueuedPerSession: 4, MaxCodeBytes: 32 << 10,
+		MaxOutputBytesPerStream: 64 << 10, MaxResultBytes: 64 << 10,
+		MaxExceptionBytes: 64 << 10,
+		MaxEnvironmentEntries: 64, MaxEnvironmentBytes: 16 << 10,
+		DefaultTimeout: 30 * time.Second, MaxTimeout: 2 * time.Minute,
+		VenvCreateTimeout: 30 * time.Second, RunnerStartTimeout: 10 * time.Second,
+		TerminateGrace: 500 * time.Millisecond, KillWait: 5 * time.Second,
+	},
+})
+if err != nil {
+	return err
+}
+defer func() {
+	mount.Deactivate()
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if closeErr := mount.Close(closeCtx); closeErr != nil {
+		log.Printf("python REPL cleanup incomplete: %v", closeErr)
+	}
+}()
+```
+
+Zero scope selects global registration and zero order selects
+`pythonrepl.DefaultOrder`. Global registration does not share state: the owner
+key always includes both the durable session ID and workspace ID, and later
+calls must present the same canonical workspace root. Operations serialize per
+owner while different owners remain isolated. A successful call preserves
+globals; a syntax or runtime exception is returned as a bounded `python_error`
+result and may preserve globals established earlier in the healthy runner.
+
+Cancellation or timeout after a runner may have accepted state, explicit clear,
+protocol failure, or runner exit discards globals and advances a process-local
+generation. Cancellation during initial venv creation or before the first
+request can reach a newly started runner cleans up without advancing generation.
+Ordinary reset retains the owner's mutable private venv; close removes it after
+the runner process group, out-of-group reaper supervisor, and Go child wait all
+finish. State never survives remount, host restart, host crash, owner change, or
+resume in a new process. Under Eino Agent v0.2.0 a pending durable call may be
+claimed and executed once during resume, while a call already marked running is
+interrupted without re-execution. Generation is diagnostic state, not a durable
+resume token.
+
+`MaxSessions` is a mount-lifetime budget for distinct owners admitted by their
+first execute. A failed setup still consumes that owner's slot, clear of an
+unknown owner consumes none, and clear of an existing owner reclaims none. Close
+and remount—or a host-owned session-scoped mount lifecycle—starts a fresh
+budget. `MaxQueuedPerSession` bounds calls waiting behind one active owner.
+Serialization covers admitted tool operations only: user-created background
+threads, async work, and subprocesses that survive a response are unsupported
+across calls and can make globals or external effects nondeterministic. Late
+Python-level output is discarded rather than attributed to a later result.
+
+### Trust and durability boundary
+
+This package is trusted native code and **not a sandbox**. Python runs with the
+host user's filesystem, network, process, and credential authority. The venv is
+created with `-m venv --without-pip`, and children receive only the environment
+entries frozen at mount; neither property is a security boundary. Python can
+still read host files, use the network, invoke known or absolute executables,
+inspect every explicit environment entry, mutate the retained venv, consume
+unbounded memory/CPU before a timeout takes effect, and deliberately detach a
+descendant from process-group cleanup. A host-managed container, VM, or sandbox
+is required for stronger isolation.
+
+Snippets must also be trusted not to tamper with the interpreter's control
+machinery. User code shares the process, imported modules, and protocol file
+descriptors with the REPL wrapper; deliberate interference can invalidate
+result acceptance and cross-call ordering. Put untrusted snippets behind an
+external OS isolation boundary.
+
+Eino durably stores normalized Python code before execution and durably stores
+the bounded inline stdout, stderr, exception, and result afterward. Never put
+secrets in code, and avoid secret environment values because Python can emit
+them. The package adds no path, PID, or environment value to results,
+fingerprints, permission patterns, or diagnostics, but it deliberately does not
+filter user-authored output. Mount `toolresultredactor` last for defense in
+depth; it cannot erase already durable tool input. Output has no spill artifact,
+and timeout/output bounds do not roll back side effects or impose a memory/CPU
+limit.
+
+Hosts own permission and approval policy, Python build validation and identity
+rotation, environment-identity rotation, stale-file handling after a hard
+crash, bounded mount close, and any presentation/authentication layer. If the
+reaper supervisor dies unexpectedly, the owner and venv are quarantined: the
+package will not risk a stale process-group signal or falsely report successful
+cleanup, so host operations must resolve the escaped resource and discard that
+mount. See [`examples/python-repl`](examples/python-repl) for a credential-free,
+non-interactive registry/orchestrator/SQLite journey that assigns a global,
+reads it in a later run, clears it, and verifies its absence.
 
 ## Bounded background command jobs
 

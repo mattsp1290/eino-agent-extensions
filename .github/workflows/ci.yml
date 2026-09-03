@@ -19,6 +19,11 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: Set up repository Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
       - name: Verify tidy module files
         run: |
           GOWORK=off go mod tidy
@@ -27,11 +32,54 @@ jobs:
         run: GOWORK=off go mod verify
       - name: Vet
         run: GOWORK=off go vet ./...
-      - name: Compile unsupported background-jobs platform
+      - name: Compile unsupported process-tool platforms
         run: |
           output_dir="$(mktemp -d)"
           GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./backgroundjobs -o "$output_dir/backgroundjobs.test.exe"
+          GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./pythonrepl -o "$output_dir/pythonrepl.test.exe"
       - name: Test
         run: GOWORK=off go test ./...
+        env:
+          PYTHON_REPL_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
       - name: Race test
         run: GOWORK=off go test -race ./...
+        env:
+          PYTHON_REPL_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+
+  python-repl-matrix:
+    name: Python REPL (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Go from module
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Set up required Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Validate explicit interpreter
+        run: |
+          test -x "$PYTHON_REPL_TEST_PYTHON"
+          "$PYTHON_REPL_TEST_PYTHON" -c 'import os, sys; assert os.path.isabs(sys.executable); assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["EXPECTED_PYTHON"]'
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python }}
+          PYTHON_REPL_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+      - name: Test real venv, process, manager, and Eino journeys
+        run: GOWORK=off go test ./pythonrepl ./examples/python-repl
+        env:
+          PYTHON_REPL_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+      - name: Race test Python REPL
+        run: GOWORK=off go test -race ./pythonrepl
+        env:
+          PYTHON_REPL_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
