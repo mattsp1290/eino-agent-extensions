@@ -22,8 +22,22 @@ const (
 	// DefaultOrder is used when Options.Order is zero.
 	DefaultOrder = 100
 
-	permissionExecute = "process.python.execute"
-	permissionManage  = "process.python.manage"
+	// ExecuteStatusCompleted means the snippet completed without a Python exception.
+	ExecuteStatusCompleted = "completed"
+	// ExecuteStatusPythonError means the snippet raised a Python exception.
+	ExecuteStatusPythonError = "python_error"
+	// StateResetCanceled means caller cancellation forced a fresh interpreter.
+	StateResetCanceled = "canceled"
+	// StateResetTimedOut means the execution deadline forced a fresh interpreter.
+	StateResetTimedOut = "timed_out"
+	// StateResetCleared means an explicit clear discarded interpreter state.
+	StateResetCleared = "cleared"
+	// StateResetRunnerFailed means a runner failure forced a fresh interpreter.
+	StateResetRunnerFailed = "runner_failed"
+
+	permissionExecute  = "process.python.execute"
+	permissionManage   = "process.python.manage"
+	maxClearInputBytes = 64
 )
 
 // BoundedText is an inline text field with an explicit truncation indicator.
@@ -34,14 +48,16 @@ type BoundedText struct {
 
 // ExecuteResult is the bounded result of one Python request.
 type ExecuteResult struct {
-	Status           string      `json:"status"`
-	Stdout           BoundedText `json:"stdout"`
-	Stderr           BoundedText `json:"stderr"`
-	Result           BoundedText `json:"result"`
-	Exception        BoundedText `json:"exception"`
-	Generation       uint64      `json:"generation"`
-	StateReset       bool        `json:"state_reset"`
-	StateResetReason string      `json:"state_reset_reason"`
+	// Status is ExecuteStatusCompleted or ExecuteStatusPythonError.
+	Status     string      `json:"status"`
+	Stdout     BoundedText `json:"stdout"`
+	Stderr     BoundedText `json:"stderr"`
+	Result     BoundedText `json:"result"`
+	Exception  BoundedText `json:"exception"`
+	Generation uint64      `json:"generation"`
+	StateReset bool        `json:"state_reset"`
+	// StateResetReason is empty or one of the exported StateReset constants.
+	StateResetReason string `json:"state_reset_reason"`
 }
 
 // ClearResult describes whether clear invalidated live interpreter state.
@@ -61,6 +77,9 @@ func normalizeExecute(options canonicalOptions) tools.InputNormalizer {
 	return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if uint64(len(raw)) > uint64(options.requestMax) {
+			return nil, malformed("size")
 		}
 		var input executeInput
 		if !strictDecode(raw, &input) {
@@ -86,6 +105,9 @@ func normalizeExecute(options canonicalOptions) tools.InputNormalizer {
 func normalizeClear(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if len(raw) > maxClearInputBytes {
+		return nil, malformed("size")
 	}
 	var input map[string]json.RawMessage
 	if !strictDecode(raw, &input) || input == nil || len(input) != 0 {
@@ -126,7 +148,7 @@ func constantTypedPattern[I any](pattern string) tools.PermissionPattern {
 
 func validResetReason(value string) bool {
 	switch value {
-	case "", "canceled", "timed_out", "cleared", "runner_failed":
+	case "", StateResetCanceled, StateResetTimedOut, StateResetCleared, StateResetRunnerFailed:
 		return true
 	default:
 		return false

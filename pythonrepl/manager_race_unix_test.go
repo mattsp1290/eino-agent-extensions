@@ -47,6 +47,76 @@ func TestCancellationDuringVenvCreationHasNoGeneration(t *testing.T) {
 	}
 }
 
+func TestCancellationBeforeVenvPublicationRetainsFailedRemoval(t *testing.T) {
+	options, _ := canonicalize(testOptions(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	removeCalls := 0
+	options.hooks = &testHooks{
+		beforeVenvPublish: func(context.Context) { cancel() },
+		removeVenv: func(path string) error {
+			removeCalls++
+			if removeCalls == 1 {
+				return errors.New("synthetic removal failure")
+			}
+			return os.RemoveAll(path)
+		},
+	}
+	manager := newManager(options)
+	deferManagerClose(t, manager)
+	root, _ := canonicalWorkspaceRoot(t.TempDir())
+	owner := ownerKey{sessionID: "publish-cancel", workspaceID: "w"}
+	if _, err := manager.execute(ctx, owner, root, "1"); !errors.Is(err, context.Canceled) || !errors.Is(err, errCleanupIncomplete) {
+		t.Fatalf("publication cancellation=%v", err)
+	}
+	session := manager.owners[owner]
+	if session.venv == nil || !session.venvInvalid || removeCalls != 1 {
+		t.Fatalf("retained cleanup venv=%t invalid=%t removals=%d", session.venv != nil, session.venvInvalid, removeCalls)
+	}
+	partialPath := session.venv.path
+	if _, err := manager.execute(context.Background(), owner, root, "6 * 7"); err != nil {
+		t.Fatalf("retry execute=%v", err)
+	}
+	if _, err := os.Stat(partialPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retained venv remains after retry: %v", err)
+	}
+	if session.venv == nil || session.venv.path == partialPath || session.venvInvalid || removeCalls != 2 {
+		t.Fatalf("replacement state venv=%#v invalid=%t removals=%d", session.venv, session.venvInvalid, removeCalls)
+	}
+}
+
+func TestVenvCreatorReapTimeoutBlocksOwnerReuse(t *testing.T) {
+	public := testOptions(t)
+	public.Limits.KillWait = 20 * time.Millisecond
+	options, _ := canonicalize(public)
+	release := make(chan struct{})
+	options.hooks = &testHooks{beforeVenvCreatorWait: func() { <-release }}
+	manager := newManager(options)
+	root, _ := canonicalWorkspaceRoot(t.TempDir())
+	owner := ownerKey{sessionID: "creator-reap", workspaceID: "w"}
+	if _, err := manager.execute(context.Background(), owner, root, "1"); !errors.Is(err, errCleanupIncomplete) {
+		t.Fatalf("initial creator cleanup=%v", err)
+	}
+	session := manager.owners[owner]
+	if session.venv == nil || !session.venvInvalid || session.runner != nil {
+		t.Fatalf("cleanup debt venv=%t invalid=%t runner=%t", session.venv != nil, session.venvInvalid, session.runner != nil)
+	}
+	retainedPath := session.venv.path
+	if _, err := manager.execute(context.Background(), owner, root, "2"); !errors.Is(err, errCleanupIncomplete) {
+		t.Fatalf("reuse during creator cleanup=%v", err)
+	}
+	entries, err := os.ReadDir(options.tempRoot)
+	if err != nil || len(entries) != 1 || session.venv == nil || session.venv.path != retainedPath {
+		t.Fatalf("owner replacement entries=%d retained=%#v err=%v", len(entries), session.venv, err)
+	}
+	close(release)
+	if err := manager.Close(context.Background()); err != nil {
+		t.Fatalf("cleanup retry=%v", err)
+	}
+	if _, err := os.Stat(retainedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retained venv remains: %v", err)
+	}
+}
+
 func TestFirstExecutePublicationLinearizesBeforeConcurrentClear(t *testing.T) {
 	options, _ := canonicalize(testOptions(t))
 	gate := newContextGate()

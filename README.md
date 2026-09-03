@@ -93,6 +93,12 @@ unbounded memory/CPU before a timeout takes effect, and deliberately detach a
 descendant from process-group cleanup. A host-managed container, VM, or sandbox
 is required for stronger isolation.
 
+Snippets must also be trusted not to tamper with the interpreter's control
+machinery. User code shares the process, imported modules, and protocol file
+descriptors with the REPL wrapper; deliberate interference can invalidate
+result acceptance and cross-call ordering. Put untrusted snippets behind an
+external OS isolation boundary.
+
 Eino durably stores normalized Python code before execution and durably stores
 the bounded inline stdout, stderr, exception, and result afterward. Never put
 secrets in code, and avoid secret environment values because Python can emit

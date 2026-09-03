@@ -195,6 +195,36 @@ func TestRunnerOutputRemainsUTF8PrefixAcrossWrites(t *testing.T) {
 	}
 }
 
+func TestRunnerResponseRequiresStatusSpecificZeroValues(t *testing.T) {
+	options, err := canonicalize(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := runnerResponse{
+		Version: runnerProtocolVersion, ID: 1, Status: ExecuteStatusCompleted,
+	}
+	if !validRunnerResponse(options, 1, base) {
+		t.Fatal("valid completed response rejected")
+	}
+	completedWithTruncatedException := base
+	completedWithTruncatedException.Exception.Truncated = true
+	if validRunnerResponse(options, 1, completedWithTruncatedException) {
+		t.Fatal("completed response accepted truncated exception")
+	}
+	pythonErrorWithResult := base
+	pythonErrorWithResult.Status = ExecuteStatusPythonError
+	pythonErrorWithResult.Result = BoundedText{Text: "forged"}
+	if validRunnerResponse(options, 1, pythonErrorWithResult) {
+		t.Fatal("python-error response accepted a result")
+	}
+	pythonErrorWithTruncatedResult := base
+	pythonErrorWithTruncatedResult.Status = ExecuteStatusPythonError
+	pythonErrorWithTruncatedResult.Result.Truncated = true
+	if validRunnerResponse(options, 1, pythonErrorWithTruncatedResult) {
+		t.Fatal("python-error response accepted truncated result")
+	}
+}
+
 func TestRunnerReplacesUnencodableUserTextWithoutBreakingProtocol(t *testing.T) {
 	options, _ := canonicalize(testOptions(t))
 	manager := newManager(options)

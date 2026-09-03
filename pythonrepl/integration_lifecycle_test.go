@@ -112,8 +112,20 @@ func TestIntegrationResultRedactorComposesAfterPython(t *testing.T) {
 	defer func() {
 		redactorMount.Deactivate()
 		pythonMount.Deactivate()
-		_ = redactorMount.Close(context.Background())
-		_ = pythonMount.Close(context.Background())
+		for _, mounted := range []struct {
+			name  string
+			mount interface{ Close(context.Context) error }
+		}{
+			{name: "redactor", mount: redactorMount},
+			{name: "python", mount: pythonMount},
+		} {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := mounted.mount.Close(ctx)
+			cancel()
+			if err != nil {
+				t.Errorf("%s mount close: %v", mounted.name, err)
+			}
+		}
 	}()
 	database := openIntegrationStore(t, "redactor.db")
 	deferDatabaseClose(t, database)

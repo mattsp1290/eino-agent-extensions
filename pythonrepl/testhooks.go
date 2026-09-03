@@ -6,13 +6,15 @@ import "context"
 // never affect mounted behavior or component identity. Tests install hooks only
 // after canonicalization to force lifecycle race boundaries deterministically.
 type testHooks struct {
-	afterVenvDirectory   func(context.Context)
-	removeVenv           func(string) error
-	afterSupervisorStart func(context.Context)
-	beforeRequestWrite   func(context.Context)
-	afterRequestWrite    func(context.Context)
-	beforeResponseCommit func(context.Context)
-	beforeReapAuthorize  func()
+	afterVenvDirectory    func(context.Context)
+	beforeVenvPublish     func(context.Context)
+	beforeVenvCreatorWait func()
+	removeVenv            func(string) error
+	afterSupervisorStart  func(context.Context)
+	beforeRequestWrite    func(context.Context)
+	afterRequestWrite     func(context.Context)
+	beforeResponseCommit  func(context.Context)
+	beforeReapAuthorize   func()
 }
 
 func runContextHook(hook func(context.Context), ctx context.Context) {

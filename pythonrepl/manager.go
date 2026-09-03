@@ -71,8 +71,15 @@ func (manager *manager) execute(ctx context.Context, key ownerKey, workspaceRoot
 			}
 			return ExecuteResult{}, createErr
 		}
+		if manager.options.hooks != nil {
+			runContextHook(manager.options.hooks.beforeVenvPublish, opCtx)
+		}
 		if err := opCtx.Err(); err != nil {
-			_ = removeVenv(venv)
+			if cleanupErr := removeVenv(venv); cleanupErr != nil {
+				session.venv = venv
+				session.venvInvalid = true
+				return ExecuteResult{}, errors.Join(err, cleanupErr)
+			}
 			return ExecuteResult{}, err
 		}
 		session.venv = venv
@@ -108,11 +115,11 @@ func (manager *manager) execute(ctx context.Context, key ownerKey, workspaceRoot
 
 	outcome, executeErr := session.runner.execute(opCtx, code)
 	if executeErr != nil {
-		reason := "runner_failed"
+		reason := StateResetRunnerFailed
 		if errors.Is(executeErr, context.Canceled) {
-			reason = "canceled"
+			reason = StateResetCanceled
 		} else if errors.Is(executeErr, context.DeadlineExceeded) {
-			reason = "timed_out"
+			reason = StateResetTimedOut
 		}
 		resetErr := manager.resetRunner(session, outcome.mayHaveExecuted || !startedNow, reason, nil)
 		if resetErr != nil {
@@ -183,7 +190,7 @@ func (manager *manager) clear(ctx context.Context, key ownerKey, workspaceRoot s
 	if session.runner == nil {
 		return ClearResult{Generation: session.generation}, nil
 	}
-	if err := manager.resetRunner(session, true, "cleared", nil); err != nil {
+	if err := manager.resetRunner(session, true, StateResetCleared, nil); err != nil {
 		return ClearResult{}, err
 	}
 	// Clear reports its reset directly, so it consumes the pending notice.

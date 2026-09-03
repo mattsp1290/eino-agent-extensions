@@ -5,8 +5,11 @@ package pythonrepl
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -45,7 +48,7 @@ func TestVenvIsPrivateWithoutPipAndRemovable(t *testing.T) {
 
 func TestVenvFailureAndCancellationRemovePartialDirectory(t *testing.T) {
 	for name, script := range map[string]string{
-		"failure":      "#!/bin/sh\n/bin/mkdir -p \"$4/junk\"\nexit 1\n",
+		"failure":      "#!/bin/sh\n/bin/mkdir -p \"$6/junk\"\nexit 1\n",
 		"cancellation": "#!/bin/sh\ntrap '' TERM\n/bin/sleep 30\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -73,5 +76,74 @@ func TestVenvFailureAndCancellationRemovePartialDirectory(t *testing.T) {
 				t.Fatalf("partial venv remains entries=%d err=%v", len(entries), err)
 			}
 		})
+	}
+}
+
+func TestVenvFailureKillsSameGroupDescendantBeforeReap(t *testing.T) {
+	public := testOptions(t)
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	wrapper := filepath.Join(t.TempDir(), "python-wrapper")
+	script := "#!/bin/sh\n(exec 3>&- 4>&-; trap '' TERM; while :; do /bin/sleep 1; done) &\necho $! > " + pidFile + "\nexit 1\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	public.PythonPath = wrapper
+	options, err := canonicalize(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createVenv(context.Background(), options); err == nil {
+		t.Fatal("venv creation unexpectedly succeeded")
+	}
+	rawPID, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(rawPID)), "%d", &pid); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("same-group descendant %d survived cleanup: %v", pid, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestVenvCreatorReapTimeoutRetainsRetryableObligation(t *testing.T) {
+	public := testOptions(t)
+	public.Limits.KillWait = 20 * time.Millisecond
+	options, err := canonicalize(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	options.hooks = &testHooks{beforeVenvCreatorWait: func() { <-release }}
+	venv, err := createVenv(context.Background(), options)
+	if !errors.Is(err, errCleanupIncomplete) || venv == nil || venv.finishCreation == nil {
+		t.Fatalf("retained creator obligation venv=%#v err=%v", venv, err)
+	}
+	if err := removeVenv(venv); !errors.Is(err, errCleanupIncomplete) {
+		t.Fatalf("premature cleanup=%v", err)
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for {
+		err = removeVenv(venv)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("creator cleanup did not become retryable: %v", err)
+		}
+	}
+	if _, err := os.Stat(venv.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("venv remains after retry: %v", err)
 	}
 }

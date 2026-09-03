@@ -10,9 +10,10 @@ import (
 )
 
 type virtualEnvironment struct {
-	path        string
-	interpreter string
-	remove      func(string) error
+	path           string
+	interpreter    string
+	remove         func(string) error
+	finishCreation func() error
 }
 
 func canonicalWorkspaceRoot(path string) (string, error) {
@@ -44,6 +45,12 @@ func withCeiling(parent context.Context, ceiling time.Duration) (context.Context
 func removeVenv(venv *virtualEnvironment) error {
 	if venv == nil || venv.path == "" {
 		return nil
+	}
+	if venv.finishCreation != nil {
+		if err := venv.finishCreation(); err != nil {
+			return errCleanupIncomplete
+		}
+		venv.finishCreation = nil
 	}
 	remove := os.RemoveAll
 	if venv.remove != nil {

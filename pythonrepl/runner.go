@@ -174,19 +174,14 @@ while True:
 const fixedSupervisorSource = `
 import json, os, struct, subprocess, sys
 
-RUNNER = sys.argv[1]
-PROTOCOL = sys.argv[2]
-RUNNER_ARGS = sys.argv[2:]
-REQUEST_FD, RESPONSE_FD, STATUS_FD, CONTROL_FD = 3, 4, 5, 6
-
 def write_all(fd, raw):
     offset = 0
     while offset < len(raw):
         offset += os.write(fd, raw[offset:])
 
-def write_frame(value):
+def write_frame(fd, value):
     raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
-    write_all(STATUS_FD, struct.pack(">I", len(raw)) + raw)
+    write_all(fd, struct.pack(">I", len(raw)) + raw)
 
 def read_exact(fd, size):
     chunks = []
@@ -198,30 +193,46 @@ def read_exact(fd, size):
         size -= len(chunk)
     return b"".join(chunks)
 
-def read_control():
-    size = struct.unpack(">I", read_exact(CONTROL_FD, 4))[0]
-    if size == 0 or size > 32:
-        raise RuntimeError("invalid control")
-    value = json.loads(read_exact(CONTROL_FD, size).decode("utf-8"))
-    if value != {"command": "reap"}:
-        raise RuntimeError("invalid control")
+if sys.argv[1] == "--venv-create":
+    import venv
+    VENV_STATUS_FD, VENV_HOLD_FD = 3, 4
+    succeeded = True
+    try:
+        venv.EnvBuilder(with_pip=False).create(sys.argv[2])
+    except BaseException:
+        succeeded = False
+    write_frame(VENV_STATUS_FD, {"succeeded": succeeded})
+    os.read(VENV_HOLD_FD, 1)
+else:
+    RUNNER = sys.argv[1]
+    PROTOCOL = sys.argv[2]
+    RUNNER_ARGS = sys.argv[2:]
+    REQUEST_FD, RESPONSE_FD, STATUS_FD, CONTROL_FD = 3, 4, 5, 6
 
-runner = subprocess.Popen(
-    [sys.executable, "-I", "-u", "-c", RUNNER] + RUNNER_ARGS,
-    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    close_fds=True, pass_fds=(REQUEST_FD, RESPONSE_FD), start_new_session=True,
-)
-os.close(REQUEST_FD)
-os.close(RESPONSE_FD)
-write_frame({
-    "phase": "ready", "version": PROTOCOL, "pid": runner.pid,
-    "pgid": os.getpgid(runner.pid), "python": [sys.version_info.major, sys.version_info.minor],
-})
-read_control()
-code = runner.wait()
-write_frame({"phase": "reaped", "version": PROTOCOL, "exit_code": code})
-os.close(STATUS_FD)
-os.close(CONTROL_FD)
+    def read_control():
+        size = struct.unpack(">I", read_exact(CONTROL_FD, 4))[0]
+        if size == 0 or size > 32:
+            raise RuntimeError("invalid control")
+        value = json.loads(read_exact(CONTROL_FD, size).decode("utf-8"))
+        if value != {"command": "reap"}:
+            raise RuntimeError("invalid control")
+
+    runner = subprocess.Popen(
+        [sys.executable, "-I", "-u", "-c", RUNNER] + RUNNER_ARGS,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        close_fds=True, pass_fds=(REQUEST_FD, RESPONSE_FD), start_new_session=True,
+    )
+    os.close(REQUEST_FD)
+    os.close(RESPONSE_FD)
+    write_frame(STATUS_FD, {
+        "phase": "ready", "version": PROTOCOL, "pid": runner.pid,
+        "pgid": os.getpgid(runner.pid), "python": [sys.version_info.major, sys.version_info.minor],
+    })
+    read_control()
+    code = runner.wait()
+    write_frame(STATUS_FD, {"phase": "reaped", "version": PROTOCOL, "exit_code": code})
+    os.close(STATUS_FD)
+    os.close(CONTROL_FD)
 `
 
 type runnerRequest struct {

@@ -350,14 +350,7 @@ func TestManagerCanceledQueuedCallNeverReachesPython(t *testing.T) {
 		queuedDone <- err
 	}()
 	gate := manager.owners[owner].gate
-	for {
-		gate.mu.Lock()
-		queued := len(gate.waiters)
-		gate.mu.Unlock()
-		if queued == 1 {
-			break
-		}
-	}
+	waitForQueuedWaiters(t, gate, 1)
 	queuedCancel()
 	if err := <-queuedDone; !errors.Is(err, context.Canceled) {
 		t.Fatalf("queued cancellation=%v", err)

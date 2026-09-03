@@ -3,6 +3,7 @@ package pythonrepl
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -30,24 +31,10 @@ func TestOperationGateFIFOQueueBoundAndCancellation(t *testing.T) {
 		}()
 	}
 	start(1, context.Background())
-	for {
-		gate.mu.Lock()
-		queued := len(gate.waiters)
-		gate.mu.Unlock()
-		if queued == 1 {
-			break
-		}
-	}
+	waitForQueuedWaiters(t, gate, 1)
 	canceled, cancel := context.WithCancel(context.Background())
 	start(2, canceled)
-	for {
-		gate.mu.Lock()
-		queued := len(gate.waiters)
-		gate.mu.Unlock()
-		if queued == 2 {
-			break
-		}
-	}
+	waitForQueuedWaiters(t, gate, 2)
 	if _, err := gate.acquire(context.Background()); !errors.Is(err, errQueueFull) {
 		t.Fatalf("queue overflow = %v", err)
 	}
@@ -67,5 +54,22 @@ func TestOperationGateFIFOQueueBoundAndCancellation(t *testing.T) {
 	defer mu.Unlock()
 	if len(order) != 1 || order[0] != 1 {
 		t.Fatalf("execution order=%v", order)
+	}
+}
+
+func waitForQueuedWaiters(t *testing.T, gate *operationGate, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		gate.mu.Lock()
+		queued := len(gate.waiters)
+		gate.mu.Unlock()
+		if queued == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queued waiters=%d want=%d", queued, want)
+		}
+		runtime.Gosched()
 	}
 }

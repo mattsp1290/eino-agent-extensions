@@ -28,6 +28,7 @@ type runnerProcess struct {
 	waitDone chan struct{}
 	waitErr  error
 	waitMu   sync.Mutex
+	ioWG     sync.WaitGroup
 
 	requestID uint64
 	termMu    sync.Mutex
@@ -212,7 +213,9 @@ func (process *runnerProcess) execute(ctx context.Context, code string) (executi
 		n   int
 		err error
 	}, 1)
+	process.ioWG.Add(1)
 	go func() {
+		defer process.ioWG.Done()
 		n, writeErr := process.requestWriter.Write(frame)
 		writeCh <- struct {
 			n   int
@@ -242,7 +245,9 @@ func (process *runnerProcess) execute(ctx context.Context, code string) (executi
 		response runnerResponse
 		err      error
 	}, 1)
+	process.ioWG.Add(1)
 	go func() {
+		defer process.ioWG.Done()
 		var response runnerResponse
 		readErr := readFrame(process.responseReader, process.options.responseMax, &response)
 		responseCh <- struct {
@@ -280,7 +285,7 @@ func (process *runnerProcess) execute(ctx context.Context, code string) (executi
 }
 
 func validRunnerResponse(options canonicalOptions, id uint64, response runnerResponse) bool {
-	if response.Version != runnerProtocolVersion || response.ID != id || (response.Status != "completed" && response.Status != "python_error") {
+	if response.Version != runnerProtocolVersion || response.ID != id || (response.Status != ExecuteStatusCompleted && response.Status != ExecuteStatusPythonError) {
 		return false
 	}
 	fields := []struct {
@@ -295,7 +300,11 @@ func validRunnerResponse(options canonicalOptions, id uint64, response runnerRes
 			return false
 		}
 	}
-	if response.Status == "completed" && response.Exception.Text != "" {
+	empty := func(value BoundedText) bool { return value.Text == "" && !value.Truncated }
+	if response.Status == ExecuteStatusCompleted && !empty(response.Exception) {
+		return false
+	}
+	if response.Status == ExecuteStatusPythonError && !empty(response.Result) {
 		return false
 	}
 	return true
@@ -316,6 +325,7 @@ func (process *runnerProcess) coordinateTermination() {
 	var result error
 	_ = process.requestWriter.Close()
 	_ = process.responseReader.Close()
+	process.ioWG.Wait()
 	if process.pgid <= 0 {
 		result = errCleanupIncomplete
 	} else {
@@ -384,6 +394,7 @@ func (process *runnerProcess) terminationError() error {
 func (process *runnerProcess) forceSupervisorStop() {
 	_ = process.requestWriter.Close()
 	_ = process.responseReader.Close()
+	process.ioWG.Wait()
 	_ = process.statusReader.Close()
 	_ = process.controlWriter.Close()
 	if process.cmd.Process != nil {

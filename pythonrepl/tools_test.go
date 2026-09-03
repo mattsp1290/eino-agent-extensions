@@ -3,6 +3,7 @@
 package pythonrepl
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -92,5 +93,29 @@ func TestTypedExecuteRetainsIdenticalBoundedCopies(t *testing.T) {
 	}
 	if int64(len(output.Output)+len(output.Structured)) > tool.Retention.MaxInlineBytes {
 		t.Fatalf("copies=%d retention=%d", len(output.Output)+len(output.Structured), tool.Retention.MaxInlineBytes)
+	}
+}
+
+func TestToolNormalizersRejectOversizedRawJSONBeforeStructuralValidation(t *testing.T) {
+	canonical, err := canonicalize(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execute := normalizeExecute(canonical)
+	maximum := int(canonical.requestMax) + 1
+	inputs := map[string][]byte{
+		"whitespace": bytes.Repeat([]byte(" "), maximum),
+		"wide":       append(append([]byte(`{"code":"x","unknown":{`), bytes.Repeat([]byte(`"a":0,`), maximum/6)...), []byte(`"z":0}}`)...),
+		"deep":       append(bytes.Repeat([]byte("["), maximum), bytes.Repeat([]byte("]"), maximum)...),
+	}
+	for name, raw := range inputs {
+		t.Run(name, func(t *testing.T) {
+			if _, err := execute(context.Background(), raw); !errors.Is(err, tools.ErrMalformedInput) {
+				t.Fatalf("oversized input error=%v", err)
+			}
+		})
+	}
+	if _, err := normalizeClear(context.Background(), bytes.Repeat([]byte(" "), maxClearInputBytes+1)); !errors.Is(err, tools.ErrMalformedInput) {
+		t.Fatalf("oversized clear error=%v", err)
 	}
 }
