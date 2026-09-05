@@ -161,13 +161,9 @@ func TestEquivalentPolicyReproducesFingerprintAndEffectiveChangeDoesNot(t *testi
 	}
 	defer func() { _ = thirdMount.Close(context.Background()) }()
 	resume, err = thirdRegistry.AcquireResumePlan(context.Background(), runtime.ResumePlanRequest{SessionID: "session", Plan: sealed})
-	if err != nil {
-		t.Fatal(err)
+	if resume != nil || !errors.Is(err, runtime.ErrExtensionPlanMismatch) {
+		t.Fatalf("changed policy resume = (%v, %v), want nil ErrExtensionPlanMismatch", resume, err)
 	}
-	if resume.Descriptor().Fingerprint == descriptor.Fingerprint {
-		t.Fatalf("changed policy retained fingerprint")
-	}
-	resume.Release()
 }
 
 func TestSessionScopeSelectionAndOrderIdentity(t *testing.T) {

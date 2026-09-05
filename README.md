@@ -3,8 +3,9 @@
 This repository contains focused extensions for
 [`github.com/mattsp1290/eino-agent`](https://github.com/mattsp1290/eino-agent).
 It currently provides a session-scoped Python REPL, bounded background command
-jobs, a host-mediated `ask_user` tool, and a trusted native tool-result secret
-redactor, all verified against Eino Agent v0.2.0.
+jobs, a host-mediated `ask_user` tool, a bounded host-mediated `web_search`
+bridge, and a trusted native tool-result secret redactor, all verified against
+Eino Agent v0.3.3.
 
 ## Session-scoped Python REPL
 
@@ -66,7 +67,7 @@ request can reach a newly started runner cleans up without advancing generation.
 Ordinary reset retains the owner's mutable private venv; close removes it after
 the runner process group, out-of-group reaper supervisor, and Go child wait all
 finish. State never survives remount, host restart, host crash, owner change, or
-resume in a new process. Under Eino Agent v0.2.0 a pending durable call may be
+resume in a new process. Under Eino Agent v0.3.3 a pending durable call may be
 claimed and executed once during resume, while a call already marked running is
 interrupted without re-execution. Generation is diagnostic state, not a durable
 resume token.
@@ -267,6 +268,121 @@ its own, and claims no Wasm or Pi/comparator parity. See
 host adapter; package integration tests cover the full orchestrator/SQLite
 path.
 
+## Bounded web-search bridge
+
+`github.com/mattsp1290/eino-agent-extensions/websearch` atomically mounts one
+synchronous `web_search` tool. The model supplies exactly one bounded `query`;
+the host's trusted `Searcher` invokes its selected backend and returns source
+records containing only `title`, an absolute HTTP(S) `url`, and `snippet`.
+
+```go
+mount, err := websearch.Mount(ctx, registry, component, websearch.Options{
+	Searcher: websearch.SearcherFunc(func(ctx context.Context, query string) ([]websearch.Source, error) {
+		// Resolve credentials and enforce host egress, freshness, rate, and
+		// backend policy here. Never return raw provider diagnostics.
+		return searchBackend(ctx, query)
+	}),
+	SearcherIdentity: "host-search-router-v1", // rotate with behavior
+	Limits: websearch.Limits{
+		MaxQueryBytes: 16 << 10,
+		MaxResults: 10,
+		MaxTitleBytes: 1 << 10,
+		MaxURLBytes: 8 << 10,
+		MaxSnippetBytes: 16 << 10,
+		MaxInFlight: 4,
+		MaxWait: 30 * time.Second,
+	},
+})
+if err != nil {
+	return err
+}
+defer func() {
+	mount.Deactivate()
+	// First drain or interrupt runs and release their frozen plans.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if closeErr := mount.Close(closeCtx); closeErr != nil {
+		log.Printf("web_search mount did not quiesce: %v", closeErr)
+	}
+}()
+```
+
+Every limit and `SearcherIdentity` is required. Zero scope selects global
+scope; zero order uses `websearch.DefaultOrder`. `ConfigHash` identifies all
+behavior-bearing limits and the callback identity while excluding the callback,
+scope, order, and component artifact identity. Hosts must rotate
+`SearcherIdentity` when backend selection, routing, or normalization changes,
+and must honestly rotate component artifact identity when its behavior changes.
+
+The adapter inspects only the first `MaxResults` callback records and never
+refills from later candidates. Title and snippet are deterministically limited
+to valid UTF-8 byte prefixes. A URL is retained byte-for-byte only when its
+complete original value is valid UTF-8, within `MaxURLBytes`, absolute HTTP(S),
+has a host, and contains no user information; otherwise the entire record is
+dropped. The returned slice and strings transfer to the adapter on successful
+callback return and must not later be mutated or reused. The adapter builds a
+separate bounded result slice. A successful search with no valid sources is
+exactly `{"results":[]}`; it is distinct from timeout, saturation, or backend
+failure.
+
+The only requested permission is `network.web.search`, with the constant
+pattern `web_search`. Permission denial or approval-required settlement occurs
+before capacity admission and invokes `Searcher` zero times. Eino durably
+stores the canonical trimmed query before execution and the bounded inline
+result afterward, so queries and source fields must not contain credentials or
+other secrets. Query text, backend identity, endpoints, credentials, and raw
+errors never enter permission identity, tool metadata, or package errors.
+Backend errors and panics become a stable sanitized failure.
+
+`MaxWait` adds a finite child deadline while preserving parent cancellation.
+`MaxInFlight` bounds callbacks per mount; saturation does not queue. A callback
+continues to occupy its slot through source bounding and JSON encoding and, if
+it ignores cancellation, until it actually exits. Thus timeout bounds the tool
+caller's wait but cannot forcibly terminate arbitrary Go code. `Searcher` must
+be concurrency-safe and cancellation-cooperative, and the host remains
+responsible for backend-level resource controls.
+
+`web_search` is retry-unsafe. Strict resume may claim and execute a pending call
+once, interrupts a recorded running call without another backend invocation,
+and never re-executes a terminal call. Backend work can finish before a process
+crash that precedes durable settlement, so this is not exactly-once execution.
+Drain unfinished runs before changing limits, `SearcherIdentity`, registration
+placement, or artifact identity because drift rejects strict resume before
+durable mutation.
+
+### Ownership, trust, and cleanup
+
+`websearch` owns the canonical schema, query semantics, source validation,
+bounded adapter, timeout, concurrency, and retention budget. Eino Agent owns
+generic JSON validation, permission enforcement, composition, durable
+settlement, inline retention, frozen plans, and strict resume. The embedding
+host owns the backend, credentials, egress and endpoint policy, freshness,
+ranking, rate limits, raw-error observability, presentation, and backend
+lifecycle.
+
+This is trusted native code, not a sandbox. Successful source values remain
+host-controlled untrusted model content even after structural bounding. The
+package does not fetch returned URLs and therefore creates no URL-fetch SSRF
+boundary; any later fetcher needs separate network and content policy. A
+separately mounted `toolresultredactor` is result defense in depth only: it
+cannot erase already durable query input and does not replace backend error
+sanitization.
+
+Shutdown has two phases. `Deactivate` removes the tool from future plans, while
+already retained plans keep authority until release. `Close` first waits for
+those leases; a timeout in that phase means the host must continue draining
+runs and plans. After leases drain, coordinator cleanup blocks admission,
+cancels active callbacks, and waits for their real exit. A timeout in this
+second phase requires quarantining the mount until a later close observes
+quiescence, or replacing the process if a callback never exits. Shut down the
+host-owned backend only after extension close succeeds.
+
+See [`examples/web-search`](examples/web-search) for a deterministic
+credential-free registry, permission, orchestrator, and in-memory SQLite
+journey. This package does not implement Pi's extension loader or rendering,
+Firecrawl search/scrape/crawl, multi-query generated-answer or result-storage
+flows, URL fetching, or any provider integration.
+
 ## Tool-result redactor
 
 `toolresultredactor` mounts one ordered transform at
@@ -341,7 +457,7 @@ The transform scans `ToolResult.Output`, every string key and value in
 and attachment metadata. Non-string JSON values are preserved. Matching spans
 in values are replaced while unmatched content remains intact.
 
-After result transforms complete, Eino v0.2.0 may reapply its fixed,
+After result transforms complete, Eino v0.3.3 may reapply its fixed,
 runtime-owned `permission_status` metadata projection. That enum is not
 tool-controlled content and is outside host-pattern matching at this transform.
 
@@ -371,13 +487,13 @@ construction.
 The transform point is an ordered waterfall, not an enforced terminal hook.
 When full-result notice protection is required, keep the redactor as the final
 `ToolResultTransformPoint` callback. A failing earlier transform skips the
-redactor, while a failing later transform makes Eino v0.2.0 restore the original
+redactor, while a failing later transform makes Eino v0.3.3 restore the original
 pre-waterfall result. Durable and model-visible settlement is generic in either
 case, but a trusted `ToolSettledPoint` observer can receive the original full
 result. Other native transforms must return sanitized success when full-result
 notice protection is required.
 
-Non-empty syntactically invalid `Structured` JSON is rejected by Eino v0.2.0
+Non-empty syntactically invalid `Structured` JSON is rejected by Eino v0.3.3
 before any result transform runs. The redactor therefore cannot sanitize that
 result or its sibling fields. Durable/model-visible settlement is generic, but
 full-result observers remain trusted. This is outside the package's

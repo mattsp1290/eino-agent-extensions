@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/cloudwego/eino v0.8.13
 	github.com/eino-contrib/jsonschema v1.0.3
-	github.com/mattsp1290/eino-agent v0.2.0
+	github.com/mattsp1290/eino-agent v0.3.3
 )
 
 require (

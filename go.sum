@@ -64,8 +64,8 @@ github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHP
 github.com/mattn/go-colorable v0.1.14/go.mod h1:6LmQG8QLFO4G5z1gPvYEzlUgJ2wF+stgPZH1UqBm1s8=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
-github.com/mattsp1290/eino-agent v0.2.0 h1:b5n1iYNdAFu+2lQR8tnM/0dilmCHcluRH/bM/ti3Jsg=
-github.com/mattsp1290/eino-agent v0.2.0/go.mod h1:v009gVJOkx5e9ngO3f7DeFLg8j3U2nv1QccFfd7j3E0=
+github.com/mattsp1290/eino-agent v0.3.3 h1:AXhNvlQ8/65kDXs0NnR76Iz/F4ROaJ9KDnaTXKqVwic=
+github.com/mattsp1290/eino-agent v0.3.3/go.mod h1:v009gVJOkx5e9ngO3f7DeFLg8j3U2nv1QccFfd7j3E0=
 github.com/mattsp1290/eino-obs v0.0.0-20260627060807-a9a6f8bb478b h1:Wk0c8Baxm8DgT3B7iWPaOP1k2QKAoc20Wv6dEvebepc=
 github.com/mattsp1290/eino-obs v0.0.0-20260627060807-a9a6f8bb478b/go.mod h1:h2idE8ypJFzcq4eOKOXGPrx56UyhI+UwKkFUyN4L0o8=
 github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b h1:j7+1HpAFS1zy5+Q4qx1fWh90gTKwiN4QCGoY9TWyyO4=
