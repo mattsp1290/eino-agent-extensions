@@ -4,6 +4,7 @@ package backgroundjobs
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -103,12 +104,8 @@ func TestMountStrictResumeRejectsBehaviorDrift(t *testing.T) {
 				_ = changedMount.Close(context.Background())
 			}()
 			resumed, err := changedRegistry.AcquireResumePlan(context.Background(), runtime.ResumePlanRequest{SessionID: "resume-session", Plan: sealed})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resumed.Release()
-			if resumed.Descriptor().Fingerprint == descriptor.Fingerprint {
-				t.Fatalf("changed behavior retained persisted fingerprint %s", descriptor.Fingerprint)
+			if resumed != nil || !errors.Is(err, runtime.ErrExtensionPlanMismatch) {
+				t.Fatalf("behavior drift resume = (%v, %v), want nil ErrExtensionPlanMismatch", resumed, err)
 			}
 		})
 	}
