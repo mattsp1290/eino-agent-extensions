@@ -80,7 +80,7 @@ func searchSyntheticSources(ctx context.Context) (result websearch.Result, err e
 	}, websearch.Options{
 		Searcher: searcher, SearcherIdentity: "example-deterministic-searcher-v1",
 		Limits: websearch.Limits{
-			MaxQueryBytes: 4096, MaxResults: 4, MaxTitleBytes: 512,
+			MaxRawInputBytes: 64 << 10, MaxQueryBytes: 4096, MaxResults: 4, MaxTitleBytes: 512,
 			MaxURLBytes: 2048, MaxSnippetBytes: 4096, MaxInFlight: 2,
 			MaxWait: 10 * time.Second,
 		},
@@ -91,7 +91,9 @@ func searchSyntheticSources(ctx context.Context) (result websearch.Result, err e
 	database, err := store.Open(ctx, ":memory:")
 	if err != nil {
 		mount.Deactivate()
-		_ = mount.Close(context.Background())
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = mount.Close(closeCtx)
+		cancel()
 		return result, err
 	}
 	defer func() {

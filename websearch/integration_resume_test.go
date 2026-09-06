@@ -104,18 +104,19 @@ func TestIntegrationTerminalResumeDoesNotSearchAgain(t *testing.T) {
 
 func TestIntegrationResumeRejectsDriftBeforeDurableMutation(t *testing.T) {
 	for name, mutate := range map[string]func(*Options, *extensionFixture){
-		"max query bytes":   func(options *Options, _ *extensionFixture) { options.Limits.MaxQueryBytes++ },
-		"max results":       func(options *Options, _ *extensionFixture) { options.Limits.MaxResults++ },
-		"max title bytes":   func(options *Options, _ *extensionFixture) { options.Limits.MaxTitleBytes++ },
-		"max URL bytes":     func(options *Options, _ *extensionFixture) { options.Limits.MaxURLBytes++ },
-		"max snippet bytes": func(options *Options, _ *extensionFixture) { options.Limits.MaxSnippetBytes++ },
-		"max in flight":     func(options *Options, _ *extensionFixture) { options.Limits.MaxInFlight++ },
-		"max wait":          func(options *Options, _ *extensionFixture) { options.Limits.MaxWait++ },
-		"searcher identity": func(options *Options, _ *extensionFixture) { options.SearcherIdentity += "-changed" },
-		"scope":             func(options *Options, _ *extensionFixture) { options.Scope = extension.SessionScope("resume-session") },
-		"order":             func(options *Options, _ *extensionFixture) { options.Order = DefaultOrder + 1 },
-		"artifact version":  func(_ *Options, fixture *extensionFixture) { fixture.component.Artifact.Version += "-changed" },
-		"artifact hash":     func(_ *Options, fixture *extensionFixture) { fixture.component.Artifact.Hash += "-changed" },
+		"max raw input bytes": func(options *Options, _ *extensionFixture) { options.Limits.MaxRawInputBytes++ },
+		"max query bytes":     func(options *Options, _ *extensionFixture) { options.Limits.MaxQueryBytes++ },
+		"max results":         func(options *Options, _ *extensionFixture) { options.Limits.MaxResults++ },
+		"max title bytes":     func(options *Options, _ *extensionFixture) { options.Limits.MaxTitleBytes++ },
+		"max URL bytes":       func(options *Options, _ *extensionFixture) { options.Limits.MaxURLBytes++ },
+		"max snippet bytes":   func(options *Options, _ *extensionFixture) { options.Limits.MaxSnippetBytes++ },
+		"max in flight":       func(options *Options, _ *extensionFixture) { options.Limits.MaxInFlight++ },
+		"max wait":            func(options *Options, _ *extensionFixture) { options.Limits.MaxWait++ },
+		"searcher identity":   func(options *Options, _ *extensionFixture) { options.SearcherIdentity += "-changed" },
+		"scope":               func(options *Options, _ *extensionFixture) { options.Scope = extension.SessionScope("resume-session") },
+		"order":               func(options *Options, _ *extensionFixture) { options.Order = DefaultOrder + 1 },
+		"artifact version":    func(_ *Options, fixture *extensionFixture) { fixture.component.Artifact.Version += "-changed" },
+		"artifact hash":       func(_ *Options, fixture *extensionFixture) { fixture.component.Artifact.Hash += "-changed" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			base := testOptions()

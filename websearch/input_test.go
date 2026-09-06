@@ -51,12 +51,22 @@ func TestInputHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestInputRejectsOversizedCanonicalEnvelopeBeforeSemanticWork(t *testing.T) {
+func TestInputRejectsOversizedRawInputBeforeSemanticWork(t *testing.T) {
 	options := canonicalOptionsForTest(t)
-	maximum := 6*options.limits.MaxQueryBytes + len(`{"query":""}`)
-	raw := json.RawMessage(`{"query":"` + strings.Repeat(" ", maximum) + `q"}`)
+	raw := json.RawMessage(`{"query":"` + strings.Repeat(" ", options.limits.MaxRawInputBytes) + `q"}`)
 	if _, err := normalizeInput(options)(context.Background(), raw); !errors.Is(err, tools.ErrMalformedInput) {
-		t.Fatalf("oversized envelope err=%v", err)
+		t.Fatalf("oversized raw input err=%v", err)
+	}
+}
+
+func TestInputAppliesQueryLimitAfterTrimWithinRawBudget(t *testing.T) {
+	options := canonicalOptionsForTest(t)
+	options.limits.MaxQueryBytes = 1
+	options.limits.MaxRawInputBytes = 256
+	raw := json.RawMessage(`{"query":"` + strings.Repeat(" ", 64) + `q"}`)
+	got, err := normalizeInput(options)(context.Background(), raw)
+	if err != nil || string(got) != `{"query":"q"}` {
+		t.Fatalf("normalized=%s err=%v", got, err)
 	}
 }
 

@@ -284,6 +284,7 @@ mount, err := websearch.Mount(ctx, registry, component, websearch.Options{
 	}),
 	SearcherIdentity: "host-search-router-v1", // rotate with behavior
 	Limits: websearch.Limits{
+		MaxRawInputBytes: 128 << 10,
 		MaxQueryBytes: 16 << 10,
 		MaxResults: 10,
 		MaxTitleBytes: 1 << 10,
@@ -307,10 +308,13 @@ defer func() {
 }()
 ```
 
-Every limit and `SearcherIdentity` is required. Zero scope selects global
-scope; zero order uses `websearch.DefaultOrder`. `ConfigHash` identifies all
-behavior-bearing limits and the callback identity while excluding the callback,
-scope, order, and component artifact identity. Hosts must rotate
+Every limit and `SearcherIdentity` is required. `MaxRawInputBytes` bounds the
+complete model-supplied JSON before parsing and must accommodate the worst-case
+escaped `MaxQueryBytes` value; `MaxQueryBytes` applies to the UTF-8 query after
+trimming. Zero scope selects global scope; zero order uses
+`websearch.DefaultOrder`. `ConfigHash` identifies all behavior-bearing limits
+and the callback identity while excluding the callback, scope, order, and
+component artifact identity. Hosts must rotate
 `SearcherIdentity` when backend selection, routing, or normalization changes,
 and must honestly rotate component artifact identity when its behavior changes.
 
@@ -327,12 +331,16 @@ failure.
 
 The only requested permission is `network.web.search`, with the constant
 pattern `web_search`. Permission denial or approval-required settlement occurs
-before capacity admission and invokes `Searcher` zero times. Eino durably
-stores the canonical trimmed query before execution and the bounded inline
-result afterward, so queries and source fields must not contain credentials or
-other secrets. Query text, backend identity, endpoints, credentials, and raw
-errors never enter permission identity, tool metadata, or package errors.
-Backend errors and panics become a stable sanitized failure.
+before capacity admission and invokes `Searcher` zero times. Under Eino Agent
+v0.3.3, the runtime durably creates the canonical call as pending, claims it as
+running, and only then evaluates permission before entering the package
+executor. A crash during policy evaluation therefore leaves a running call;
+strict resume interrupts that call without reevaluating permission or invoking
+`Searcher`. The bounded inline result is stored after execution, so queries and
+source fields must not contain credentials or other secrets. Query text,
+backend identity, endpoints, credentials, and raw errors never enter permission
+identity, tool metadata, or package errors. Backend errors and panics become a
+stable sanitized failure.
 
 `MaxWait` adds a finite child deadline while preserving parent cancellation.
 `MaxInFlight` bounds callbacks per mount; saturation does not queue. A callback

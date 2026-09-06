@@ -13,7 +13,7 @@ import (
 
 func testLimits() Limits {
 	return Limits{
-		MaxQueryBytes: 128, MaxResults: 2, MaxTitleBytes: 16,
+		MaxRawInputBytes: 1024, MaxQueryBytes: 128, MaxResults: 2, MaxTitleBytes: 16,
 		MaxURLBytes: 128, MaxSnippetBytes: 32, MaxInFlight: 2,
 		MaxWait: time.Second,
 	}

@@ -89,8 +89,8 @@ func TestMaterializedDecoderPinsShapeAndUnicodeBoundary(t *testing.T) {
 		"duplicate":      []byte(`{"query":"a","query":"b"}`),
 		"unknown":        []byte(`{"query":"a","extra":true}`),
 		"trailing":       []byte(`{"query":"a"} {}`),
-		"oversized envelope": []byte(`{"query":"` +
-			strings.Repeat(" ", 6*canonical.limits.MaxQueryBytes+len(`{"query":""}`)) + `q"}`),
+		"oversized raw input": []byte(`{"query":"` +
+			strings.Repeat(" ", canonical.limits.MaxRawInputBytes) + `q"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got, err := tool.InputDecoder.DecodeToolInput(context.Background(), raw); !errors.Is(err, tools.ErrMalformedInput) {

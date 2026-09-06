@@ -22,6 +22,7 @@ const (
 	// DefaultOrder is used when Options.Order is zero.
 	DefaultOrder = 100
 
+	maxRawInputBytes         = 128 << 10
 	maxQueryBytes            = 16 << 10
 	maxResults               = 100
 	maxTitleBytes            = 1 << 10
@@ -45,13 +46,14 @@ const (
 // wait, and concurrent callback resource. Every field is required and must be
 // positive.
 type Limits struct {
-	MaxQueryBytes   int           // 1 through 16 KiB.
-	MaxResults      int           // 1 through 100.
-	MaxTitleBytes   int           // 1 through 1 KiB.
-	MaxURLBytes     int           // len("http://a") through 8 KiB.
-	MaxSnippetBytes int           // 1 through 16 KiB.
-	MaxInFlight     int           // 1 through 256.
-	MaxWait         time.Duration // Greater than zero and at most 10 minutes.
+	MaxRawInputBytes int           // 6*MaxQueryBytes plus the JSON envelope through 128 KiB.
+	MaxQueryBytes    int           // 1 through 16 KiB after trimming.
+	MaxResults       int           // 1 through 100.
+	MaxTitleBytes    int           // 1 through 1 KiB.
+	MaxURLBytes      int           // len("http://a") through 8 KiB.
+	MaxSnippetBytes  int           // 1 through 16 KiB.
+	MaxInFlight      int           // 1 through 256.
+	MaxWait          time.Duration // Greater than zero and at most 10 minutes.
 }
 
 // Options describes one immutable web_search mount. SearcherIdentity is a
@@ -173,6 +175,14 @@ func validIdentity(value string) bool {
 func validateLimits(limits Limits) error {
 	if limits.MaxQueryBytes <= 0 || limits.MaxQueryBytes > maxQueryBytes {
 		return configError("max-query")
+	}
+	minimumRaw, ok := checkedMul(int64(limits.MaxQueryBytes), 6)
+	if !ok {
+		return configError("max-raw-input")
+	}
+	minimumRaw, ok = checkedAdd(minimumRaw, int64(len(`{"query":""}`)))
+	if !ok || int64(limits.MaxRawInputBytes) < minimumRaw || limits.MaxRawInputBytes > maxRawInputBytes {
+		return configError("max-raw-input")
 	}
 	if limits.MaxResults <= 0 || limits.MaxResults > maxResults {
 		return configError("max-results")

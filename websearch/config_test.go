@@ -45,28 +45,34 @@ func TestConfigRejectsInvalidSearcherIdentityAndLimits(t *testing.T) {
 		"identity nul":       func(o *Options) { o.SearcherIdentity = "bad\x00identity" },
 		"identity utf8":      func(o *Options) { o.SearcherIdentity = string([]byte{0xff}) },
 		"identity long":      func(o *Options) { o.SearcherIdentity = strings.Repeat("a", maxSearcherIdentityBytes+1) },
-		"query zero":         func(o *Options) { o.Limits.MaxQueryBytes = 0 },
-		"query negative":     func(o *Options) { o.Limits.MaxQueryBytes = -1 },
-		"query ceiling":      func(o *Options) { o.Limits.MaxQueryBytes = maxQueryBytes + 1 },
-		"results zero":       func(o *Options) { o.Limits.MaxResults = 0 },
-		"results negative":   func(o *Options) { o.Limits.MaxResults = -1 },
-		"results ceiling":    func(o *Options) { o.Limits.MaxResults = maxResults + 1 },
-		"title zero":         func(o *Options) { o.Limits.MaxTitleBytes = 0 },
-		"title negative":     func(o *Options) { o.Limits.MaxTitleBytes = -1 },
-		"title ceiling":      func(o *Options) { o.Limits.MaxTitleBytes = maxTitleBytes + 1 },
-		"url too small":      func(o *Options) { o.Limits.MaxURLBytes = minimumURLBytes - 1 },
-		"url negative":       func(o *Options) { o.Limits.MaxURLBytes = -1 },
-		"url ceiling":        func(o *Options) { o.Limits.MaxURLBytes = maxURLBytes + 1 },
-		"snippet zero":       func(o *Options) { o.Limits.MaxSnippetBytes = 0 },
-		"snippet negative":   func(o *Options) { o.Limits.MaxSnippetBytes = -1 },
-		"snippet ceiling":    func(o *Options) { o.Limits.MaxSnippetBytes = maxSnippetBytes + 1 },
-		"capacity zero":      func(o *Options) { o.Limits.MaxInFlight = 0 },
-		"capacity negative":  func(o *Options) { o.Limits.MaxInFlight = -1 },
-		"capacity ceiling":   func(o *Options) { o.Limits.MaxInFlight = maxInFlight + 1 },
-		"wait zero":          func(o *Options) { o.Limits.MaxWait = 0 },
-		"wait negative":      func(o *Options) { o.Limits.MaxWait = -time.Nanosecond },
-		"wait ceiling":       func(o *Options) { o.Limits.MaxWait = maxWait + time.Nanosecond },
-		"near max int":       func(o *Options) { o.Limits.MaxResults = math.MaxInt },
+		"raw input zero":     func(o *Options) { o.Limits.MaxRawInputBytes = 0 },
+		"raw input negative": func(o *Options) { o.Limits.MaxRawInputBytes = -1 },
+		"raw input too small": func(o *Options) {
+			o.Limits.MaxRawInputBytes = 6*o.Limits.MaxQueryBytes + len(`{"query":""}`) - 1
+		},
+		"raw input ceiling": func(o *Options) { o.Limits.MaxRawInputBytes = maxRawInputBytes + 1 },
+		"query zero":        func(o *Options) { o.Limits.MaxQueryBytes = 0 },
+		"query negative":    func(o *Options) { o.Limits.MaxQueryBytes = -1 },
+		"query ceiling":     func(o *Options) { o.Limits.MaxQueryBytes = maxQueryBytes + 1 },
+		"results zero":      func(o *Options) { o.Limits.MaxResults = 0 },
+		"results negative":  func(o *Options) { o.Limits.MaxResults = -1 },
+		"results ceiling":   func(o *Options) { o.Limits.MaxResults = maxResults + 1 },
+		"title zero":        func(o *Options) { o.Limits.MaxTitleBytes = 0 },
+		"title negative":    func(o *Options) { o.Limits.MaxTitleBytes = -1 },
+		"title ceiling":     func(o *Options) { o.Limits.MaxTitleBytes = maxTitleBytes + 1 },
+		"url too small":     func(o *Options) { o.Limits.MaxURLBytes = minimumURLBytes - 1 },
+		"url negative":      func(o *Options) { o.Limits.MaxURLBytes = -1 },
+		"url ceiling":       func(o *Options) { o.Limits.MaxURLBytes = maxURLBytes + 1 },
+		"snippet zero":      func(o *Options) { o.Limits.MaxSnippetBytes = 0 },
+		"snippet negative":  func(o *Options) { o.Limits.MaxSnippetBytes = -1 },
+		"snippet ceiling":   func(o *Options) { o.Limits.MaxSnippetBytes = maxSnippetBytes + 1 },
+		"capacity zero":     func(o *Options) { o.Limits.MaxInFlight = 0 },
+		"capacity negative": func(o *Options) { o.Limits.MaxInFlight = -1 },
+		"capacity ceiling":  func(o *Options) { o.Limits.MaxInFlight = maxInFlight + 1 },
+		"wait zero":         func(o *Options) { o.Limits.MaxWait = 0 },
+		"wait negative":     func(o *Options) { o.Limits.MaxWait = -time.Nanosecond },
+		"wait ceiling":      func(o *Options) { o.Limits.MaxWait = maxWait + time.Nanosecond },
+		"near max int":      func(o *Options) { o.Limits.MaxResults = math.MaxInt },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -133,7 +139,7 @@ func testPolicyHash(t *testing.T, policy hashPolicy) string {
 func TestConfigAcceptsPackageCeilings(t *testing.T) {
 	options := testOptions()
 	options.Limits = Limits{
-		MaxQueryBytes: maxQueryBytes, MaxResults: maxResults,
+		MaxRawInputBytes: maxRawInputBytes, MaxQueryBytes: maxQueryBytes, MaxResults: maxResults,
 		MaxTitleBytes: maxTitleBytes, MaxURLBytes: maxURLBytes,
 		MaxSnippetBytes: maxSnippetBytes, MaxInFlight: maxInFlight, MaxWait: maxWait,
 	}
@@ -149,14 +155,15 @@ func TestConfigHashTracksBehaviorButNotPlacementOrCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	mutations := map[string]func(*Options){
-		"identity": func(o *Options) { o.SearcherIdentity += "-changed" },
-		"query":    func(o *Options) { o.Limits.MaxQueryBytes++ },
-		"results":  func(o *Options) { o.Limits.MaxResults++ },
-		"title":    func(o *Options) { o.Limits.MaxTitleBytes++ },
-		"url":      func(o *Options) { o.Limits.MaxURLBytes++ },
-		"snippet":  func(o *Options) { o.Limits.MaxSnippetBytes++ },
-		"capacity": func(o *Options) { o.Limits.MaxInFlight++ },
-		"wait":     func(o *Options) { o.Limits.MaxWait++ },
+		"identity":  func(o *Options) { o.SearcherIdentity += "-changed" },
+		"raw input": func(o *Options) { o.Limits.MaxRawInputBytes++ },
+		"query":     func(o *Options) { o.Limits.MaxQueryBytes++ },
+		"results":   func(o *Options) { o.Limits.MaxResults++ },
+		"title":     func(o *Options) { o.Limits.MaxTitleBytes++ },
+		"url":       func(o *Options) { o.Limits.MaxURLBytes++ },
+		"snippet":   func(o *Options) { o.Limits.MaxSnippetBytes++ },
+		"capacity":  func(o *Options) { o.Limits.MaxInFlight++ },
+		"wait":      func(o *Options) { o.Limits.MaxWait++ },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -198,7 +205,7 @@ func TestRetentionMatchesWorstCaseAndRejectsOverflowHelpers(t *testing.T) {
 
 func TestRetentionSmallLiteralWorstCase(t *testing.T) {
 	limits := Limits{
-		MaxQueryBytes: 1, MaxResults: 2, MaxTitleBytes: 3,
+		MaxRawInputBytes: 18, MaxQueryBytes: 1, MaxResults: 2, MaxTitleBytes: 3,
 		MaxURLBytes: 8, MaxSnippetBytes: 4, MaxInFlight: 1,
 		MaxWait: time.Second,
 	}

@@ -213,16 +213,17 @@ func TestMountStrictResumeIdentity(t *testing.T) {
 	resumed.Release()
 	closeTestMount(t, equivalentMount)
 	mutations := map[string]func(*Options){
-		"identity": func(o *Options) { o.SearcherIdentity += "-changed" },
-		"query":    func(o *Options) { o.Limits.MaxQueryBytes++ },
-		"results":  func(o *Options) { o.Limits.MaxResults++ },
-		"title":    func(o *Options) { o.Limits.MaxTitleBytes++ },
-		"url":      func(o *Options) { o.Limits.MaxURLBytes++ },
-		"snippet":  func(o *Options) { o.Limits.MaxSnippetBytes++ },
-		"capacity": func(o *Options) { o.Limits.MaxInFlight++ },
-		"wait":     func(o *Options) { o.Limits.MaxWait++ },
-		"scope":    func(o *Options) { o.Scope = extension.SessionScope("resume-session") },
-		"order":    func(o *Options) { o.Order = 41 },
+		"identity":  func(o *Options) { o.SearcherIdentity += "-changed" },
+		"raw input": func(o *Options) { o.Limits.MaxRawInputBytes++ },
+		"query":     func(o *Options) { o.Limits.MaxQueryBytes++ },
+		"results":   func(o *Options) { o.Limits.MaxResults++ },
+		"title":     func(o *Options) { o.Limits.MaxTitleBytes++ },
+		"url":       func(o *Options) { o.Limits.MaxURLBytes++ },
+		"snippet":   func(o *Options) { o.Limits.MaxSnippetBytes++ },
+		"capacity":  func(o *Options) { o.Limits.MaxInFlight++ },
+		"wait":      func(o *Options) { o.Limits.MaxWait++ },
+		"scope":     func(o *Options) { o.Scope = extension.SessionScope("resume-session") },
+		"order":     func(o *Options) { o.Order = 41 },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
