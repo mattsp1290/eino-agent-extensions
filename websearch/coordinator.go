@@ -30,12 +30,6 @@ type responseEnvelope struct {
 	completedAt time.Time
 }
 
-type responseState struct {
-	mu       sync.Mutex
-	envelope *responseEnvelope
-	done     chan struct{}
-}
-
 func newCoordinator(options canonicalOptions) *coordinator {
 	return &coordinator{
 		searcher: options.searcher, limits: options.limits,
@@ -73,8 +67,8 @@ func (c *coordinator) search(ctx context.Context, call runtime.ToolCall, executi
 		c.release(id)
 		return nil, err
 	}
-	state := &responseState{done: make(chan struct{})}
-	go c.runSearcher(child, cancel, id, input.Query, state)
+	responses := make(chan responseEnvelope, 1)
+	go c.runSearcher(child, cancel, id, input.Query, responses)
 
 	timer := time.NewTimer(time.Until(deadline))
 	defer func() {
@@ -85,49 +79,52 @@ func (c *coordinator) search(ctx context.Context, call runtime.ToolCall, executi
 			}
 		}
 	}()
-	for {
+	var envelope responseEnvelope
+	published := false
+	select {
+	case <-ctx.Done():
+		cancel()
+		return nil, ctx.Err()
+	case envelope = <-responses:
+		published = true
+	case <-timer.C:
 		select {
+		case envelope = <-responses:
+			published = true
+		default:
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return nil, err
+	}
+	if published && envelope.completedAt.Before(deadline) {
+		cancel()
+		if envelope.err != nil {
+			return nil, envelope.err
+		}
+		return append(json.RawMessage(nil), envelope.encoded...), nil
+	}
+	// Let the finite child deadline own cancellation identity. The package
+	// timer and context deadline target the same instant, but the timer may win
+	// the scheduler race by a few instructions.
+	if child.Err() == nil {
+		select {
+		case <-child.Done():
 		case <-ctx.Done():
 			cancel()
 			return nil, ctx.Err()
-		case <-state.done:
-		case <-timer.C:
-		}
-		if err := ctx.Err(); err != nil {
-			cancel()
-			return nil, err
-		}
-		envelope, published := state.snapshot()
-		if published && envelope.completedAt.Before(deadline) {
-			cancel()
-			if envelope.err != nil {
-				return nil, envelope.err
-			}
-			return append(json.RawMessage(nil), envelope.encoded...), nil
-		}
-		if !c.now().Before(deadline) || (published && !envelope.completedAt.Before(deadline)) {
-			// Let the finite child deadline own cancellation identity. The
-			// package timer and context deadline target the same instant, but
-			// the timer may win the scheduler race by a few instructions.
-			if child.Err() == nil {
-				select {
-				case <-child.Done():
-				case <-ctx.Done():
-					cancel()
-					return nil, ctx.Err()
-				}
-			}
-			if err := ctx.Err(); err != nil {
-				cancel()
-				return nil, err
-			}
-			cancel()
-			return nil, context.DeadlineExceeded
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return nil, err
+	}
+	cancel()
+	return nil, context.DeadlineExceeded
 }
 
-func (c *coordinator) runSearcher(ctx context.Context, cancel context.CancelFunc, id uint64, query string, state *responseState) {
+func (c *coordinator) runSearcher(ctx context.Context, cancel context.CancelFunc, id uint64, query string, responses chan<- responseEnvelope) {
 	defer cancel()
 	defer c.release(id)
 	envelope := responseEnvelope{}
@@ -141,7 +138,7 @@ func (c *coordinator) runSearcher(ctx context.Context, cancel context.CancelFunc
 		}
 	}
 	envelope.completedAt = c.now()
-	state.publish(envelope)
+	responses <- envelope
 }
 
 func callSearcher(ctx context.Context, searcher Searcher, query string) (records []Source, err error) {
@@ -156,22 +153,6 @@ func callSearcher(ctx context.Context, searcher Searcher, query string) (records
 
 func boundAndEncode(records []Source, limits Limits) (json.RawMessage, error) {
 	return json.Marshal(boundSources(records, limits))
-}
-
-func (state *responseState) publish(envelope responseEnvelope) {
-	state.mu.Lock()
-	state.envelope = &envelope
-	state.mu.Unlock()
-	close(state.done)
-}
-
-func (state *responseState) snapshot() (responseEnvelope, bool) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.envelope == nil {
-		return responseEnvelope{}, false
-	}
-	return *state.envelope, true
 }
 
 func (c *coordinator) acquire(cancel context.CancelFunc) (uint64, bool) {
