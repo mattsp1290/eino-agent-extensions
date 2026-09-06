@@ -3,8 +3,9 @@
 This repository contains focused extensions for
 [`github.com/mattsp1290/eino-agent`](https://github.com/mattsp1290/eino-agent).
 It currently provides a session-scoped Python REPL, bounded background command
-jobs, a host-mediated `ask_user` tool, and a trusted native tool-result secret
-redactor, all verified against Eino Agent v0.2.0.
+jobs, a host-mediated `ask_user` tool, a bounded delegated-task bridge, and a
+trusted native tool-result secret redactor, all verified against Eino Agent
+v0.3.1.
 
 ## Session-scoped Python REPL
 
@@ -66,7 +67,7 @@ request can reach a newly started runner cleans up without advancing generation.
 Ordinary reset retains the owner's mutable private venv; close removes it after
 the runner process group, out-of-group reaper supervisor, and Go child wait all
 finish. State never survives remount, host restart, host crash, owner change, or
-resume in a new process. Under Eino Agent v0.2.0 a pending durable call may be
+resume in a new process. Under Eino Agent v0.3.1 a pending durable call may be
 claimed and executed once during resume, while a call already marked running is
 interrupted without re-execution. Generation is diagnostic state, not a durable
 resume token.
@@ -267,6 +268,115 @@ its own, and claims no Wasm or Pi/comparator parity. See
 host adapter; package integration tests cover the full orchestrator/SQLite
 path.
 
+## Bounded delegated-task tool
+
+`github.com/mattsp1290/eino-agent-extensions/delegatetask` atomically mounts one
+synchronous `delegate_task` tool. A model supplies a bounded task and one
+bounded `profile`; the host's trusted `Runner` performs or rejects that work.
+The profile is an opaque, non-secret identifier. The extension validates its
+syntax but never interprets, upgrades, substitutes, or grants capabilities from
+it.
+
+```go
+mount, err := delegatetask.Mount(ctx, registry, component, delegatetask.Options{
+	Runner: delegatetask.RunnerFunc(func(ctx context.Context, request delegatetask.Request) (delegatetask.Response, error) {
+		// Validate request.Profile and request.WorkspaceID/WorkspaceRoot under
+		// host policy before constructing any child runtime.
+		return delegatetask.Response{
+			Status: delegatetask.ResponseCompleted,
+			Output: "bounded non-secret summary",
+		}, nil
+	}),
+	RunnerIdentity: "host-delegate-router-v1", // rotate with routing behavior
+	Limits: delegatetask.Limits{
+		MaxTaskBytes: 16 << 10,
+		MaxProfileBytes: 64,
+		MaxResultBytes: 64 << 10,
+		MaxInFlight: 4,
+		MaxWait: 2 * time.Minute,
+	},
+})
+if err != nil {
+	return err
+}
+defer func() {
+	mount.Deactivate()
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if closeErr := mount.Close(closeCtx); closeErr != nil {
+		log.Printf("delegate_task mount did not quiesce: %v", closeErr)
+	}
+}()
+```
+
+Every limit and `RunnerIdentity` is required. Zero scope selects global scope,
+and zero order uses `delegatetask.DefaultOrder`. A global definition can resolve
+in different workspaces. Each `Request` carries the durable session, run, and
+tool-call IDs plus Eino's authoritative workspace ID and root exactly as
+supplied, including empty values. These are routing inputs, not grants: the
+Runner decides whether its selected profile requires workspace context and is
+responsible for validating paths and isolation policy.
+
+| Status | Meaning | Tool error? |
+| --- | --- | --- |
+| `completed` | Delegated work completed. | no |
+| `failed` | Delegated work ran but did not complete successfully. | no |
+| `rejected` | Host policy rejected the task or profile. | no |
+| `unavailable` | The Runner cannot accept work, or mount capacity is full. | no |
+| `timed_out` | The package's `MaxWait` expired while the parent remained active. | no |
+
+Parent cancellation remains cancellation. Runner errors, malformed responses,
+and panics become sanitized tool failures and never expose host error or panic
+text. The package does not queue at capacity. A callback continues to count
+against `MaxInFlight` until it actually exits, even after timeout, so a
+non-cooperative Runner can delay cleanup but cannot create more than the
+configured number of package-owned callback goroutines. Timeout and
+cancellation do not roll back Runner side effects.
+
+The tool requests Eino's stable `session.subagent` permission with the pattern
+`delegate-profile:<profile>`. Permission denial or approval-required settlement
+happens before capacity admission and never calls Runner. Task text, workspace
+paths, results, and host errors never enter the permission pattern.
+
+Eino durably stores the canonical task and profile before execution and the
+bounded inline result afterward; neither may contain secrets. A separately
+mounted `toolresultredactor` is output defense in depth only and cannot erase
+already durable task input. Eino v0.3.1 canonicalizes raw JSON before package
+normalization: its materialized decoder rejects raw invalid UTF-8 in the
+current Go toolchain and replaces isolated UTF-16 surrogate escapes with
+U+FFFD. Because a legitimate U+FFFD is indistinguishable from repaired input,
+the package accepts replacement characters.
+
+`delegate_task` is retry-unsafe. A pending durable call may be claimed and run
+once during strict resume; a call already marked running is interrupted without
+calling Runner again, and terminal calls are not re-executed. Runner side
+effects may finish before a host crash that precedes durable settlement, so
+this is non-reexecution after a recorded running claim—not exactly-once
+execution. Rotate `RunnerIdentity` whenever profile routing or Runner behavior
+changes and drain unfinished runs before changing it or any limit, since such
+drift rejects exact resume before durable mutation.
+
+### Trust and capability boundary
+
+This extension and its Runner are trusted native code, not a sandbox. Runner
+alone owns profile existence and privilege checks, child model and tool
+selection, filesystem/network/process/credential policy, resource limits, and
+isolation. Hosts executing untrusted work must place Runner behind an OS or
+remote isolation boundary. The extension itself creates no child Eino agent,
+process, background task, recursive delegation, provider, or credential flow.
+
+Mount shutdown first blocks admission, cancels active callbacks, and waits for
+them to exit. If `Close` reaches its caller's deadline, cleanup has not
+succeeded: quarantine that mount, do not remount a replacement Runner
+generation in the same process while the old callback lives, and retry Close
+only to observe quiescence. Replace the host process if the callback never
+exits. For rollback, quiesce and unmount before reverting package construction
+or the dependency pin; already settled records remain ordinary tool history.
+
+See [`examples/delegate-task`](examples/delegate-task) for a credential-free,
+deterministic Runner using a real registry, frozen plan, explicit workspace
+routing, and structured result.
+
 ## Tool-result redactor
 
 `toolresultredactor` mounts one ordered transform at
@@ -341,7 +451,7 @@ The transform scans `ToolResult.Output`, every string key and value in
 and attachment metadata. Non-string JSON values are preserved. Matching spans
 in values are replaced while unmatched content remains intact.
 
-After result transforms complete, Eino v0.2.0 may reapply its fixed,
+After result transforms complete, Eino v0.3.1 may reapply its fixed,
 runtime-owned `permission_status` metadata projection. That enum is not
 tool-controlled content and is outside host-pattern matching at this transform.
 
@@ -371,13 +481,13 @@ construction.
 The transform point is an ordered waterfall, not an enforced terminal hook.
 When full-result notice protection is required, keep the redactor as the final
 `ToolResultTransformPoint` callback. A failing earlier transform skips the
-redactor, while a failing later transform makes Eino v0.2.0 restore the original
+redactor, while a failing later transform makes Eino v0.3.1 restore the original
 pre-waterfall result. Durable and model-visible settlement is generic in either
 case, but a trusted `ToolSettledPoint` observer can receive the original full
 result. Other native transforms must return sanitized success when full-result
 notice protection is required.
 
-Non-empty syntactically invalid `Structured` JSON is rejected by Eino v0.2.0
+Non-empty syntactically invalid `Structured` JSON is rejected by Eino v0.3.1
 before any result transform runs. The redactor therefore cannot sanitize that
 result or its sibling fields. Durable/model-visible settlement is generic, but
 full-result observers remain trusted. This is outside the package's
