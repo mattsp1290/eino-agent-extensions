@@ -301,10 +301,6 @@ func (clock *lateCompletionClock) Now() time.Time {
 	return clock.deadline
 }
 
-func (clock *lateCompletionClock) NewDeadlineTimer(deadline time.Time) coordinatorTimer {
-	return realCoordinatorTimer{timer: time.NewTimer(time.Until(deadline))}
-}
-
 func TestCoordinatorDiscardsSuccessCompletedAtPackageDeadline(t *testing.T) {
 	options := testOptions()
 	options.Limits.MaxWait = 20 * time.Millisecond
@@ -314,7 +310,8 @@ func TestCoordinatorDiscardsSuccessCompletedAtPackageDeadline(t *testing.T) {
 	canonical, _ := canonicalize(options)
 	coordinator := newCoordinator(canonical)
 	start := time.Now()
-	coordinator.clock = &lateCompletionClock{start: start, deadline: start.Add(options.Limits.MaxWait)}
+	clock := &lateCompletionClock{start: start, deadline: start.Add(options.Limits.MaxWait)}
+	coordinator.now = clock.Now
 	raw, err := coordinator.search(context.Background(), testCall(), testToolContext(), toolInput{Query: "q"})
 	if raw != nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("raw=%s err=%v", raw, err)

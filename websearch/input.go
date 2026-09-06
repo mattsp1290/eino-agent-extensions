@@ -32,13 +32,29 @@ func normalizeInput(options canonicalOptions) tools.InputNormalizer {
 		if !utf8.Valid(raw) {
 			return nil, malformed("utf8")
 		}
-		if !uniqueJSONKeys(raw) {
-			return nil, malformed("duplicate-field")
-		}
 		var input toolInput
 		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&input); err != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) {
+		opening, err := decoder.Token()
+		if err != nil || opening != json.Delim('{') {
+			return nil, malformed("shape")
+		}
+		seenQuery := false
+		for decoder.More() {
+			token, err := decoder.Token()
+			key, ok := token.(string)
+			if err != nil || !ok || key != "query" {
+				return nil, malformed("shape")
+			}
+			if seenQuery {
+				return nil, malformed("duplicate-field")
+			}
+			if err := decoder.Decode(&input.Query); err != nil {
+				return nil, malformed("shape")
+			}
+			seenQuery = true
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') || !seenQuery || !errors.Is(decoder.Decode(new(any)), io.EOF) {
 			return nil, malformed("shape")
 		}
 		input.Query = strings.TrimSpace(input.Query)
@@ -59,54 +75,4 @@ func decodeCanonicalInput(raw json.RawMessage) (toolInput, error) {
 		return toolInput{}, runtimeError("canonical-input")
 	}
 	return input, nil
-}
-
-func uniqueJSONKeys(raw []byte) bool {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	if !consumeUniqueJSONValue(decoder) {
-		return false
-	}
-	return errors.Is(decoder.Decode(new(any)), io.EOF)
-}
-
-func consumeUniqueJSONValue(decoder *json.Decoder) bool {
-	token, err := decoder.Token()
-	if err != nil {
-		return false
-	}
-	delimiter, compound := token.(json.Delim)
-	if !compound {
-		return true
-	}
-	switch delimiter {
-	case '{':
-		seen := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			key, ok := keyToken.(string)
-			if err != nil || !ok {
-				return false
-			}
-			if _, duplicate := seen[key]; duplicate {
-				return false
-			}
-			seen[key] = struct{}{}
-			if !consumeUniqueJSONValue(decoder) {
-				return false
-			}
-		}
-		closing, err := decoder.Token()
-		return err == nil && closing == json.Delim('}')
-	case '[':
-		for decoder.More() {
-			if !consumeUniqueJSONValue(decoder) {
-				return false
-			}
-		}
-		closing, err := decoder.Token()
-		return err == nil && closing == json.Delim(']')
-	default:
-		return false
-	}
 }

@@ -20,31 +20,9 @@ type coordinator struct {
 	cancels  map[uint64]context.CancelFunc
 	done     chan struct{}
 	doneOnce sync.Once
-	clock    coordinatorClock
+	now      func() time.Time
 	encode   func([]Source, Limits) (json.RawMessage, error)
 }
-
-type coordinatorClock interface {
-	Now() time.Time
-	NewDeadlineTimer(time.Time) coordinatorTimer
-}
-
-type coordinatorTimer interface {
-	C() <-chan time.Time
-	Stop() bool
-}
-
-type realCoordinatorClock struct{}
-
-func (realCoordinatorClock) Now() time.Time { return time.Now() }
-func (realCoordinatorClock) NewDeadlineTimer(deadline time.Time) coordinatorTimer {
-	return realCoordinatorTimer{timer: time.NewTimer(time.Until(deadline))}
-}
-
-type realCoordinatorTimer struct{ timer *time.Timer }
-
-func (timer realCoordinatorTimer) C() <-chan time.Time { return timer.timer.C }
-func (timer realCoordinatorTimer) Stop() bool          { return timer.timer.Stop() }
 
 type responseEnvelope struct {
 	encoded     json.RawMessage
@@ -62,7 +40,7 @@ func newCoordinator(options canonicalOptions) *coordinator {
 	return &coordinator{
 		searcher: options.searcher, limits: options.limits,
 		cancels: make(map[uint64]context.CancelFunc), done: make(chan struct{}),
-		clock: realCoordinatorClock{}, encode: boundAndEncode,
+		now: time.Now, encode: boundAndEncode,
 	}
 }
 
@@ -79,7 +57,7 @@ func (c *coordinator) search(ctx context.Context, call runtime.ToolCall, executi
 	if executionContext.Turn.RunID != "" && executionContext.Turn.RunID != call.RunID {
 		return nil, runtimeError("turn-run")
 	}
-	startedAt := c.clock.Now()
+	startedAt := c.now()
 	deadline := startedAt.Add(c.limits.MaxWait)
 	child, cancel := context.WithDeadline(ctx, deadline)
 	id, admitted := c.acquire(cancel)
@@ -98,11 +76,11 @@ func (c *coordinator) search(ctx context.Context, call runtime.ToolCall, executi
 	state := &responseState{done: make(chan struct{})}
 	go c.runSearcher(child, cancel, id, input.Query, state)
 
-	timer := c.clock.NewDeadlineTimer(deadline)
+	timer := time.NewTimer(time.Until(deadline))
 	defer func() {
 		if !timer.Stop() {
 			select {
-			case <-timer.C():
+			case <-timer.C:
 			default:
 			}
 		}
@@ -113,7 +91,7 @@ func (c *coordinator) search(ctx context.Context, call runtime.ToolCall, executi
 			cancel()
 			return nil, ctx.Err()
 		case <-state.done:
-		case <-timer.C():
+		case <-timer.C:
 		}
 		if err := ctx.Err(); err != nil {
 			cancel()
@@ -127,7 +105,7 @@ func (c *coordinator) search(ctx context.Context, call runtime.ToolCall, executi
 			}
 			return append(json.RawMessage(nil), envelope.encoded...), nil
 		}
-		if !c.clock.Now().Before(deadline) || (published && !envelope.completedAt.Before(deadline)) {
+		if !c.now().Before(deadline) || (published && !envelope.completedAt.Before(deadline)) {
 			// Let the finite child deadline own cancellation identity. The
 			// package timer and context deadline target the same instant, but
 			// the timer may win the scheduler race by a few instructions.
@@ -162,7 +140,7 @@ func (c *coordinator) runSearcher(ctx context.Context, cancel context.CancelFunc
 			envelope.err = runtimeError("result-encoding")
 		}
 	}
-	envelope.completedAt = c.clock.Now()
+	envelope.completedAt = c.now()
 	state.publish(envelope)
 }
 
