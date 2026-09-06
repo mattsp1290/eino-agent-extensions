@@ -2,6 +2,9 @@ package websearch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -43,18 +46,25 @@ func TestConfigRejectsInvalidSearcherIdentityAndLimits(t *testing.T) {
 		"identity utf8":      func(o *Options) { o.SearcherIdentity = string([]byte{0xff}) },
 		"identity long":      func(o *Options) { o.SearcherIdentity = strings.Repeat("a", maxSearcherIdentityBytes+1) },
 		"query zero":         func(o *Options) { o.Limits.MaxQueryBytes = 0 },
+		"query negative":     func(o *Options) { o.Limits.MaxQueryBytes = -1 },
 		"query ceiling":      func(o *Options) { o.Limits.MaxQueryBytes = maxQueryBytes + 1 },
 		"results zero":       func(o *Options) { o.Limits.MaxResults = 0 },
+		"results negative":   func(o *Options) { o.Limits.MaxResults = -1 },
 		"results ceiling":    func(o *Options) { o.Limits.MaxResults = maxResults + 1 },
 		"title zero":         func(o *Options) { o.Limits.MaxTitleBytes = 0 },
+		"title negative":     func(o *Options) { o.Limits.MaxTitleBytes = -1 },
 		"title ceiling":      func(o *Options) { o.Limits.MaxTitleBytes = maxTitleBytes + 1 },
 		"url too small":      func(o *Options) { o.Limits.MaxURLBytes = minimumURLBytes - 1 },
+		"url negative":       func(o *Options) { o.Limits.MaxURLBytes = -1 },
 		"url ceiling":        func(o *Options) { o.Limits.MaxURLBytes = maxURLBytes + 1 },
 		"snippet zero":       func(o *Options) { o.Limits.MaxSnippetBytes = 0 },
+		"snippet negative":   func(o *Options) { o.Limits.MaxSnippetBytes = -1 },
 		"snippet ceiling":    func(o *Options) { o.Limits.MaxSnippetBytes = maxSnippetBytes + 1 },
 		"capacity zero":      func(o *Options) { o.Limits.MaxInFlight = 0 },
+		"capacity negative":  func(o *Options) { o.Limits.MaxInFlight = -1 },
 		"capacity ceiling":   func(o *Options) { o.Limits.MaxInFlight = maxInFlight + 1 },
 		"wait zero":          func(o *Options) { o.Limits.MaxWait = 0 },
+		"wait negative":      func(o *Options) { o.Limits.MaxWait = -time.Nanosecond },
 		"wait ceiling":       func(o *Options) { o.Limits.MaxWait = maxWait + time.Nanosecond },
 		"near max int":       func(o *Options) { o.Limits.MaxResults = math.MaxInt },
 	}
@@ -67,6 +77,57 @@ func TestConfigRejectsInvalidSearcherIdentityAndLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigHashIncludesFixedContractIdentities(t *testing.T) {
+	options, err := canonicalize(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := hashPolicy{
+		Version: configurationVersion, Tool: ToolName, Registration: registrationID,
+		ToolSchema: toolSchemaVersion, ResultSchema: resultSchemaVersion,
+		SourceValidation: sourceVersion, Permission: PermissionSearch,
+		PermissionPattern: permissionPattern, PermissionVersion: permissionVersion,
+		Limits: options.limits, SearcherIdentity: options.searcherIdentity,
+	}
+	want, err := configHash(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := testPolicyHash(t, policy); got != want {
+		t.Fatalf("literal policy hash=%q want=%q", got, want)
+	}
+	mutations := map[string]func(*hashPolicy){
+		"version":            func(p *hashPolicy) { p.Version += "-changed" },
+		"tool":               func(p *hashPolicy) { p.Tool += "-changed" },
+		"registration":       func(p *hashPolicy) { p.Registration += "-changed" },
+		"tool schema":        func(p *hashPolicy) { p.ToolSchema += "-changed" },
+		"result schema":      func(p *hashPolicy) { p.ResultSchema += "-changed" },
+		"source validation":  func(p *hashPolicy) { p.SourceValidation += "-changed" },
+		"permission":         func(p *hashPolicy) { p.Permission += "-changed" },
+		"permission pattern": func(p *hashPolicy) { p.PermissionPattern += "-changed" },
+		"permission version": func(p *hashPolicy) { p.PermissionVersion += "-changed" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			changed := policy
+			mutate(&changed)
+			if got := testPolicyHash(t, changed); got == want {
+				t.Fatalf("fixed identity did not affect hash %q", got)
+			}
+		})
+	}
+}
+
+func testPolicyHash(t *testing.T, policy hashPolicy) string {
+	t.Helper()
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
 }
 
 func TestConfigAcceptsPackageCeilings(t *testing.T) {
@@ -132,5 +193,23 @@ func TestRetentionMatchesWorstCaseAndRejectsOverflowHelpers(t *testing.T) {
 	}
 	if _, ok := checkedMul(math.MaxInt64, 2); ok {
 		t.Fatal("multiplication overflow accepted")
+	}
+}
+
+func TestRetentionSmallLiteralWorstCase(t *testing.T) {
+	limits := Limits{
+		MaxQueryBytes: 1, MaxResults: 2, MaxTitleBytes: 3,
+		MaxURLBytes: 8, MaxSnippetBytes: 4, MaxInFlight: 1,
+		MaxWait: time.Second,
+	}
+	retention, err := resultRetention(limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One JSON copy is 14 envelope bytes plus two 124-byte worst-case
+	// records and their comma. Runtime retention must hold two copies.
+	const want = int64(526)
+	if retention.MaxInlineBytes != want || retention.StoreExternal || retention.Redact {
+		t.Fatalf("retention=%#v want-inline=%d", retention, want)
 	}
 }

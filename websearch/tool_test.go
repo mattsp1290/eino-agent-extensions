@@ -68,7 +68,16 @@ func TestDefinitionExecutorForwardsContextAndReturnsPreencodedResult(t *testing.
 }
 
 func TestMaterializedDecoderPinsShapeAndUnicodeBoundary(t *testing.T) {
-	canonical := canonicalOptionsForTest(t)
+	var searchCalls int
+	options := testOptions()
+	options.Searcher = SearcherFunc(func(context.Context, string) ([]Source, error) {
+		searchCalls++
+		return nil, nil
+	})
+	canonical, err := canonicalize(options)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tool, err := tools.Materialize(context.Background(), definition(canonical, newCoordinator(canonical)), runtime.ToolScopeContext{SessionID: "session"})
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +89,8 @@ func TestMaterializedDecoderPinsShapeAndUnicodeBoundary(t *testing.T) {
 		"duplicate":      []byte(`{"query":"a","query":"b"}`),
 		"unknown":        []byte(`{"query":"a","extra":true}`),
 		"trailing":       []byte(`{"query":"a"} {}`),
+		"oversized envelope": []byte(`{"query":"` +
+			strings.Repeat(" ", 6*canonical.limits.MaxQueryBytes+len(`{"query":""}`)) + `q"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got, err := tool.InputDecoder.DecodeToolInput(context.Background(), raw); !errors.Is(err, tools.ErrMalformedInput) {
@@ -100,6 +111,9 @@ func TestMaterializedDecoderPinsShapeAndUnicodeBoundary(t *testing.T) {
 	got, err = tool.InputDecoder.DecodeToolInput(context.Background(), []byte(`{"query":"legitimate �"}`))
 	if err != nil || !strings.Contains(string(got), "legitimate �") {
 		t.Fatalf("replacement character canonical=%q err=%v", got, err)
+	}
+	if searchCalls != 0 {
+		t.Fatalf("input decoding invoked Searcher %d times", searchCalls)
 	}
 }
 

@@ -1,6 +1,7 @@
 package websearch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -103,9 +104,18 @@ func TestIntegrationTerminalResumeDoesNotSearchAgain(t *testing.T) {
 
 func TestIntegrationResumeRejectsDriftBeforeDurableMutation(t *testing.T) {
 	for name, mutate := range map[string]func(*Options, *extensionFixture){
-		"configuration":     func(options *Options, _ *extensionFixture) { options.Limits.MaxTitleBytes++ },
+		"max query bytes":   func(options *Options, _ *extensionFixture) { options.Limits.MaxQueryBytes++ },
+		"max results":       func(options *Options, _ *extensionFixture) { options.Limits.MaxResults++ },
+		"max title bytes":   func(options *Options, _ *extensionFixture) { options.Limits.MaxTitleBytes++ },
+		"max URL bytes":     func(options *Options, _ *extensionFixture) { options.Limits.MaxURLBytes++ },
+		"max snippet bytes": func(options *Options, _ *extensionFixture) { options.Limits.MaxSnippetBytes++ },
+		"max in flight":     func(options *Options, _ *extensionFixture) { options.Limits.MaxInFlight++ },
+		"max wait":          func(options *Options, _ *extensionFixture) { options.Limits.MaxWait++ },
 		"searcher identity": func(options *Options, _ *extensionFixture) { options.SearcherIdentity += "-changed" },
-		"artifact":          func(_ *Options, fixture *extensionFixture) { fixture.component.Artifact.Hash += "-changed" },
+		"scope":             func(options *Options, _ *extensionFixture) { options.Scope = extension.SessionScope("resume-session") },
+		"order":             func(options *Options, _ *extensionFixture) { options.Order = DefaultOrder + 1 },
+		"artifact version":  func(_ *Options, fixture *extensionFixture) { fixture.component.Artifact.Version += "-changed" },
+		"artifact hash":     func(_ *Options, fixture *extensionFixture) { fixture.component.Artifact.Hash += "-changed" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			base := testOptions()
@@ -113,10 +123,7 @@ func TestIntegrationResumeRejectsDriftBeforeDurableMutation(t *testing.T) {
 			descriptor, canonicalInput := acquireResumeFixture(t, base, component)
 			database, run := seedResumeRun(t, descriptor, canonicalInput, session.ToolCallPending)
 			defer database.Close()
-			beforeCall, _ := database.GetToolCall(context.Background(), "resume-web-search-call")
-			beforeRun, _ := database.GetRun(context.Background(), run.ID)
-			beforeMessages, _ := database.ListMessages(context.Background(), run.SessionID, session.ReplayCursor{Limit: 100})
-			beforeEvents, _ := database.ListEvents(context.Background(), run.SessionID, session.EventCursor{Limit: 100})
+			before := durableResumeSnapshot(t, database, run)
 			var calls atomic.Int32
 			base.Searcher = SearcherFunc(func(context.Context, string) ([]Source, error) {
 				calls.Add(1)
@@ -130,15 +137,43 @@ func TestIntegrationResumeRejectsDriftBeforeDurableMutation(t *testing.T) {
 			if handle != nil || !errors.Is(err, runtime.ErrExtensionPlanMismatch) {
 				t.Fatalf("resume handle=%v err=%v", handle, err)
 			}
-			afterCall, _ := database.GetToolCall(context.Background(), "resume-web-search-call")
-			afterRun, _ := database.GetRun(context.Background(), run.ID)
-			afterMessages, _ := database.ListMessages(context.Background(), run.SessionID, session.ReplayCursor{Limit: 100})
-			afterEvents, _ := database.ListEvents(context.Background(), run.SessionID, session.EventCursor{Limit: 100})
-			if calls.Load() != 0 || afterCall.Status != beforeCall.Status || afterCall.ClaimToken != beforeCall.ClaimToken || afterRun.Status != beforeRun.Status || afterRun.ClaimToken != beforeRun.ClaimToken || len(afterMessages.Parts) != len(beforeMessages.Parts) || len(afterEvents.Events) != len(beforeEvents.Events) {
+			after := durableResumeSnapshot(t, database, run)
+			if calls.Load() != 0 || !bytes.Equal(after, before) {
 				t.Fatal("resume mismatch mutated durable state")
 			}
 		})
 	}
+}
+
+func durableResumeSnapshot(t *testing.T, database *store.Store, run session.Run) []byte {
+	t.Helper()
+	ctx := context.Background()
+	call, err := database.GetToolCall(ctx, "resume-web-search-call")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedRun, err := database.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := database.ListMessages(ctx, run.SessionID, session.ReplayCursor{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := database.ListEvents(ctx, run.SessionID, session.EventCursor{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(struct {
+		Call     session.ToolCall
+		Run      session.Run
+		Messages session.ReplayBatch
+		Events   session.EventBatch
+	}{Call: call, Run: storedRun, Messages: messages, Events: events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 type extensionFixture struct {

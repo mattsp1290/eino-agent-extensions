@@ -320,3 +320,45 @@ func TestCoordinatorDiscardsSuccessCompletedAtPackageDeadline(t *testing.T) {
 		t.Fatalf("raw=%s err=%v", raw, err)
 	}
 }
+
+func TestCoordinatorDeadlineDuringPostCallbackProcessingRetainsCapacityAndCloseWaits(t *testing.T) {
+	processing := make(chan struct{})
+	release := make(chan struct{})
+	options := testOptions()
+	options.Limits.MaxInFlight = 1
+	options.Limits.MaxWait = 20 * time.Millisecond
+	options.Searcher = SearcherFunc(func(context.Context, string) ([]Source, error) {
+		return []Source{{Title: "late", URL: "https://example.test/late", Snippet: "discard"}}, nil
+	})
+	canonical, _ := canonicalize(options)
+	coordinator := newCoordinator(canonical)
+	coordinator.encode = func(records []Source, limits Limits) (json.RawMessage, error) {
+		close(processing)
+		<-release
+		return boundAndEncode(records, limits)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := coordinator.search(context.Background(), testCall(), testToolContext(), toolInput{Query: "first"})
+		firstDone <- err
+	}()
+	<-processing
+	if err := <-firstDone; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first err=%v", err)
+	}
+	second := testCall()
+	second.ID = "second"
+	if _, err := coordinator.search(context.Background(), second, testToolContext(), toolInput{Query: "second"}); !errors.Is(err, errSearchCapacity) {
+		t.Fatalf("second err=%v", err)
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	err := coordinator.Close(closeCtx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("close err=%v", err)
+	}
+	close(release)
+	if err := coordinator.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

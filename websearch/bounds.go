@@ -42,11 +42,15 @@ func validSourceURL(value string, maximum int) bool {
 	if len(value) > maximum || !utf8.ValidString(value) {
 		return false
 	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Host == "" || parsed.User != nil {
+	scheme, _, found := strings.Cut(value, ":")
+	if !found || (scheme != "http" && scheme != "https") {
 		return false
 	}
-	return parsed.Scheme == "http" || parsed.Scheme == "https"
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil {
+		return false
+	}
+	return parsed.Scheme == scheme
 }
 
 func worstCaseResultBytes(limits Limits) (int64, error) {

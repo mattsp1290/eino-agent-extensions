@@ -21,6 +21,7 @@ type coordinator struct {
 	done     chan struct{}
 	doneOnce sync.Once
 	clock    coordinatorClock
+	encode   func([]Source, Limits) (json.RawMessage, error)
 }
 
 type coordinatorClock interface {
@@ -61,7 +62,7 @@ func newCoordinator(options canonicalOptions) *coordinator {
 	return &coordinator{
 		searcher: options.searcher, limits: options.limits,
 		cancels: make(map[uint64]context.CancelFunc), done: make(chan struct{}),
-		clock: realCoordinatorClock{},
+		clock: realCoordinatorClock{}, encode: boundAndEncode,
 	}
 }
 
@@ -152,25 +153,31 @@ func (c *coordinator) runSearcher(ctx context.Context, cancel context.CancelFunc
 	defer cancel()
 	defer c.release(id)
 	envelope := responseEnvelope{}
-	func() {
-		defer func() {
-			if recover() != nil {
-				envelope.err = errSearchOperation
-			}
-		}()
-		records, err := c.searcher.Search(ctx, query)
-		if err != nil {
-			envelope.err = errSearchOperation
-			return
-		}
-		result := boundSources(records, c.limits)
-		envelope.encoded, err = json.Marshal(result)
+	records, err := callSearcher(ctx, c.searcher, query)
+	if err != nil {
+		envelope.err = errSearchOperation
+	} else {
+		envelope.encoded, err = c.encode(records, c.limits)
 		if err != nil {
 			envelope.err = runtimeError("result-encoding")
 		}
-	}()
+	}
 	envelope.completedAt = c.clock.Now()
 	state.publish(envelope)
+}
+
+func callSearcher(ctx context.Context, searcher Searcher, query string) (records []Source, err error) {
+	defer func() {
+		if recover() != nil {
+			records = nil
+			err = errSearchOperation
+		}
+	}()
+	return searcher.Search(ctx, query)
+}
+
+func boundAndEncode(records []Source, limits Limits) (json.RawMessage, error) {
+	return json.Marshal(boundSources(records, limits))
 }
 
 func (state *responseState) publish(envelope responseEnvelope) {

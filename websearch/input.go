@@ -21,6 +21,14 @@ func normalizeInput(options canonicalOptions) tools.InputNormalizer {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		maximum, ok := checkedMul(int64(options.limits.MaxQueryBytes), 6)
+		if !ok {
+			return nil, malformed("query")
+		}
+		maximum, ok = checkedAdd(maximum, int64(len(`{"query":""}`)))
+		if !ok || int64(len(raw)) > maximum {
+			return nil, malformed("query")
+		}
 		if !utf8.Valid(raw) {
 			return nil, malformed("utf8")
 		}

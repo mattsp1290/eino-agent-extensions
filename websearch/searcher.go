@@ -11,8 +11,8 @@ type Source struct {
 	Snippet string `json:"snippet"`
 }
 
-// Result is the complete model-facing result. Results is always non-nil for a
-// successful search, including an empty search.
+// Result is the complete model-facing result shape. Successful web_search
+// adapter output always initializes Results, including an empty search.
 type Result struct {
 	Results []Source `json:"results"`
 }

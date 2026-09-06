@@ -33,11 +33,25 @@ func TestBoundsDropInvalidURLsWithoutRepair(t *testing.T) {
 	records := []Source{
 		{URL: ""}, {URL: "/relative"}, {URL: "//example.test/path"},
 		{URL: "ftp://example.test/file"}, {URL: "http:///missing-host"},
+		{URL: "http://:80/path"}, {URL: "https://:443/"},
+		{URL: "HTTP://example.test/path"}, {URL: "Http://example.test/path"},
 		{URL: "https://user:pass@example.test/private"}, {URL: "https://example.test/\ncontrol"},
 		{URL: invalidUTF8}, {URL: over}, {Title: "ok", URL: valid, Snippet: "ok"},
 	}
 	result := boundSources(records, limits)
 	if len(result.Results) != 1 || result.Results[0].URL != valid {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestBoundsHugeHostFieldsCopyOnlyConfiguredPrefixes(t *testing.T) {
+	limits := testLimits()
+	huge := strings.Repeat("x", 16<<20)
+	result := boundSources([]Source{
+		{Title: huge, URL: "https://example.test/", Snippet: huge},
+		{Title: "drop", URL: "https://example.test/" + huge, Snippet: "drop"},
+	}, limits)
+	if len(result.Results) != 1 || len(result.Results[0].Title) != limits.MaxTitleBytes || len(result.Results[0].Snippet) != limits.MaxSnippetBytes {
 		t.Fatalf("result=%#v", result)
 	}
 }

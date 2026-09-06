@@ -45,13 +45,13 @@ const (
 // wait, and concurrent callback resource. Every field is required and must be
 // positive.
 type Limits struct {
-	MaxQueryBytes   int
-	MaxResults      int
-	MaxTitleBytes   int
-	MaxURLBytes     int
-	MaxSnippetBytes int
-	MaxInFlight     int
-	MaxWait         time.Duration
+	MaxQueryBytes   int           // 1 through 16 KiB.
+	MaxResults      int           // 1 through 100.
+	MaxTitleBytes   int           // 1 through 1 KiB.
+	MaxURLBytes     int           // len("http://a") through 8 KiB.
+	MaxSnippetBytes int           // 1 through 16 KiB.
+	MaxInFlight     int           // 1 through 256.
+	MaxWait         time.Duration // Greater than zero and at most 10 minutes.
 }
 
 // Options describes one immutable web_search mount. SearcherIdentity is a

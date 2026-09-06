@@ -35,7 +35,7 @@ func TestIntegrationBoundedDurableSuccessAndNextTurn(t *testing.T) {
 	if string(result.call.Input) != `{"query":"bounded query"}` || len(result.queries) != 1 || result.queries[0] != "bounded query" {
 		t.Fatalf("input=%s queries=%#v", result.call.Input, result.queries)
 	}
-	if len(result.permissions) != 1 || result.permissions[0].Permission != PermissionSearch || result.permissions[0].Pattern != permissionPattern {
+	if !result.permissionObserved || len(result.permissions) != 1 || result.permissions[0].Permission != PermissionSearch || result.permissions[0].Pattern != permissionPattern {
 		t.Fatalf("permissions=%#v", result.permissions)
 	}
 	permissionRaw, _ := json.Marshal(result.permissions)
@@ -119,10 +119,73 @@ func TestIntegrationEmptySuccessDistinctFromPermissionAndBackendFailures(t *test
 				calls.Add(1)
 				return nil, nil
 			}), action, nil)
-			if result.call.Status != session.ToolCallFailed || calls.Load() != 0 || len(result.queries) != 0 {
+			if result.call.Status != session.ToolCallFailed || string(result.call.Input) != `{"query":"bounded query"}` || !result.permissionObserved || calls.Load() != 0 || len(result.queries) != 0 {
 				t.Fatalf("call=%#v callback=%d queries=%#v", result.call, calls.Load(), result.queries)
 			}
 		})
+	}
+}
+
+func TestIntegrationParentDeadlineShorterThanPackageWaitCancelsSearcherOnce(t *testing.T) {
+	entered := make(chan struct{})
+	canceled := make(chan error, 1)
+	var calls atomic.Int32
+	options := testOptions()
+	options.Limits.MaxWait = time.Second
+	options.SearcherIdentity = "integration-parent-deadline-v1"
+	options.Searcher = SearcherFunc(func(ctx context.Context, _ string) ([]Source, error) {
+		calls.Add(1)
+		close(entered)
+		<-ctx.Done()
+		canceled <- ctx.Err()
+		return nil, ctx.Err()
+	})
+	registry, mount := mountTestRegistry(t, options)
+	defer closeTestMount(t, mount)
+	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "parent-deadline.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	streamer := integrationStreamer(func(_ context.Context, request model.Request) ([]*einoschema.Message, error) {
+		if latestToolMessage(request.Messages) != nil {
+			return []*einoschema.Message{einoschema.AssistantMessage("unexpected", nil)}, nil
+		}
+		return []*einoschema.Message{einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID: "parent-deadline-call", Type: "function", Function: einoschema.FunctionCall{Name: ToolName, Arguments: integrationInput},
+		}})}, nil
+	})
+	orchestrator := newIntegrationOrchestrator(t, database, registry, streamer, permissions.StaticPolicy{}, "parent-deadline-owner")
+	parent, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	handle, err := orchestrator.Start(parent, integrationRuntimeRequest("parent-deadline-session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("searcher did not start")
+	}
+	select {
+	case result := <-handle.Done():
+		if result.Status != session.RunInterrupted || !result.Interrupted {
+			t.Fatalf("result=%#v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("parent-deadline run did not settle")
+	}
+	select {
+	case childErr := <-canceled:
+		if !errors.Is(childErr, context.DeadlineExceeded) {
+			t.Fatalf("child error=%v", childErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("child did not observe parent deadline")
+	}
+	call, err := database.GetToolCall(context.Background(), "parent-deadline-call")
+	if err != nil || call.Status != session.ToolCallInterrupted || call.Error != context.DeadlineExceeded.Error() || calls.Load() != 1 {
+		t.Fatalf("call=%#v calls=%d err=%v", call, calls.Load(), err)
 	}
 }
 

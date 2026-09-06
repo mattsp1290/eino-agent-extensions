@@ -24,12 +24,13 @@ import (
 const integrationInput = `{"query":"  bounded query  "}`
 
 type integrationResult struct {
-	call        session.ToolCall
-	nextRequest []byte
-	queries     []string
-	permissions []permissions.Request
-	parts       []byte
-	events      []byte
+	call               session.ToolCall
+	nextRequest        []byte
+	queries            []string
+	permissions        []permissions.Request
+	permissionObserved bool
+	parts              []byte
+	events             []byte
 }
 
 func decodeDurableResult(raw json.RawMessage, result *Result) error {
@@ -58,9 +59,37 @@ func runFreshIntegration(t *testing.T, searcher Searcher, action permissions.Act
 	var mu sync.Mutex
 	var queries []string
 	var permissionRequests []permissions.Request
-	policy := permissions.PolicyFunc(func(_ context.Context, request permissions.Request) (permissions.Decision, error) {
+	var permissionObserved bool
+	policy := permissions.PolicyFunc(func(ctx context.Context, request permissions.Request) (permissions.Decision, error) {
+		call, err := database.GetToolCall(ctx, session.ToolCallID(request.ToolCallID))
+		if err != nil {
+			return permissions.Decision{}, fmt.Errorf("permission durable call: %w", err)
+		}
+		if call.Status != session.ToolCallRunning || string(call.Input) != `{"query":"bounded query"}` {
+			return permissions.Decision{}, fmt.Errorf("permission observed noncanonical claimed call: status=%s input=%s", call.Status, call.Input)
+		}
+		events, err := database.ListEvents(ctx, call.SessionID, session.EventCursor{Limit: 100})
+		if err != nil {
+			return permissions.Decision{}, fmt.Errorf("permission durable transitions: %w", err)
+		}
+		pendingIndex, runningIndex := -1, -1
+		for index, event := range events.Events {
+			if event.ToolCallID != call.ID {
+				continue
+			}
+			switch event.ToolTransition {
+			case session.ToolTransitionPending:
+				pendingIndex = index
+			case session.ToolTransitionRunning:
+				runningIndex = index
+			}
+		}
+		if pendingIndex < 0 || runningIndex <= pendingIndex {
+			return permissions.Decision{}, fmt.Errorf("permission observed invalid durable transition order: pending=%d running=%d", pendingIndex, runningIndex)
+		}
 		mu.Lock()
 		permissionRequests = append(permissionRequests, request)
+		permissionObserved = true
 		mu.Unlock()
 		return permissions.Decision{Action: action, Message: string(action)}, nil
 	})
@@ -70,8 +99,12 @@ func runFreshIntegration(t *testing.T, searcher Searcher, action permissions.Act
 	}
 	options.Searcher = SearcherFunc(func(ctx context.Context, query string) ([]Source, error) {
 		mu.Lock()
+		observed := permissionObserved
 		queries = append(queries, query)
 		mu.Unlock()
+		if !observed {
+			return nil, errors.New("searcher admitted before permission observed durable input")
+		}
 		return searcher.Search(ctx, query)
 	})
 	mount, err := Mount(context.Background(), registry, testComponent("integration"), options)
@@ -112,8 +145,9 @@ func runFreshIntegration(t *testing.T, searcher Searcher, action permissions.Act
 	mu.Lock()
 	queriesCopy := append([]string(nil), queries...)
 	permissionsCopy := append([]permissions.Request(nil), permissionRequests...)
+	permissionObservedCopy := permissionObserved
 	mu.Unlock()
-	return integrationResult{call: call, nextRequest: nextRequest, queries: queriesCopy, permissions: permissionsCopy, parts: parts, events: events}
+	return integrationResult{call: call, nextRequest: nextRequest, queries: queriesCopy, permissions: permissionsCopy, permissionObserved: permissionObservedCopy, parts: parts, events: events}
 }
 
 func newIntegrationOrchestrator(t *testing.T, database *store.Store, registry *composition.Registry, streamer model.Streamer, policy permissions.Policy, owner string) *runtime.StreamingOrchestrator {

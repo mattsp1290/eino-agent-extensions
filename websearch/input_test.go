@@ -51,6 +51,15 @@ func TestInputHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestInputRejectsOversizedCanonicalEnvelopeBeforeSemanticWork(t *testing.T) {
+	options := canonicalOptionsForTest(t)
+	maximum := 6*options.limits.MaxQueryBytes + len(`{"query":""}`)
+	raw := json.RawMessage(`{"query":"` + strings.Repeat(" ", maximum) + `q"}`)
+	if _, err := normalizeInput(options)(context.Background(), raw); !errors.Is(err, tools.ErrMalformedInput) {
+		t.Fatalf("oversized envelope err=%v", err)
+	}
+}
+
 func mustJSON(t *testing.T, value string) string {
 	t.Helper()
 	raw, err := json.Marshal(value)
