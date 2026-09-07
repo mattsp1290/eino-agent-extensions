@@ -583,7 +583,8 @@ so the operating system rejects symlink escapes at any path component;
 instruction-file symlinks are skipped even when their target is inside the
 boundary. Root-relative `path` labels such as `../AGENTS.md` avoid absolute host
 paths, but they are model guidance, not tamper-evident provenance. File bodies
-remain verbatim and can forge envelope text.
+have trailing Unicode whitespace removed; the remaining bytes are emitted
+unchanged and can forge envelope text.
 
 A blocked filesystem or non-cooperative resolver call cannot be forcibly
 terminated. The caller receives `code=deadline`, while that goroutine retains
@@ -599,10 +600,11 @@ with `runtime.WithModelRequestMaxBytes`). An oversized audited request fails
 with `session.ErrModelRequestTooLarge`. Linux and macOS are tested; Windows
 behavior is not exercised by this repository's CI.
 
-Strict resume requires the identical artifact, configuration hash, prompt name,
-scope, and order. Drain unfinished runs before changing limits, file names,
-resolver identity, placement, or artifact identity. To remove the extension,
-deactivate it, release acquired plans, then close it with a deadline. See
+Strict resume requires the identical component instance ID, artifact,
+configuration hash, prompt name, scope, and order. Drain unfinished runs before
+changing limits, file names, resolver identity, placement, or artifact identity.
+To remove the extension, deactivate it, release acquired plans, then close it
+with a deadline. See
 [`examples/workspace-instructions`](examples/workspace-instructions) for a
 credential-free deterministic frozen-plan example.
 

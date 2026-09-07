@@ -2,7 +2,6 @@ package workspaceinstructions
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 )
@@ -13,6 +12,18 @@ type candidateRead struct {
 }
 
 type candidateReader func(context.Context, *os.Root, string, int) (candidateRead, error)
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (reader contextReader) Read(buffer []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.r.Read(buffer)
+}
 
 func defaultReadCandidate(ctx context.Context, root *os.Root, name string, maxBytes int) (candidateRead, error) {
 	if err := ctx.Err(); err != nil {
@@ -30,28 +41,13 @@ func defaultReadCandidate(ctx context.Context, root *os.Root, name string, maxBy
 		_ = file.Close()
 		return candidateRead{}, err
 	}
-	data := make([]byte, maxBytes+1)
-	count := 0
-	for count < len(data) {
-		if err := ctx.Err(); err != nil {
-			_ = file.Close()
-			return candidateRead{}, err
-		}
-		n, readErr := file.Read(data[count:])
-		count += n
-		if readErr != nil {
-			if !errors.Is(readErr, io.EOF) {
-				_ = file.Close()
-				return candidateRead{}, readErr
-			}
-			break
-		}
-		if n == 0 {
-			break
-		}
+	data, readErr := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: file}, int64(maxBytes)+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return candidateRead{}, readErr
 	}
-	if err := file.Close(); err != nil {
-		return candidateRead{}, err
+	if closeErr != nil {
+		return candidateRead{}, closeErr
 	}
-	return candidateRead{data: data[:count], info: info}, nil
+	return candidateRead{data: data, info: info}, nil
 }

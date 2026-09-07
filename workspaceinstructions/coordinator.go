@@ -47,6 +47,7 @@ type workEnvelope struct {
 	section     string
 	err         error
 	completedAt time.Time
+	cause       error
 }
 
 type workState struct {
@@ -128,23 +129,25 @@ func (c *coordinator) run(ctx context.Context, work func(context.Context) (strin
 			return "", err
 		}
 		envelope, published := state.snapshot()
-		if published && envelope.completedAt.Before(deadline) {
-			if errors.Is(context.Cause(child), errCoordinatorClosing) {
-				cancel(nil)
-				return "", providerError("closed")
-			}
-			if errors.Is(context.Cause(child), errPackageDeadline) {
-				cancel(errPackageDeadline)
-				return "", providerError("deadline")
-			}
+		if section, err, settled := envelope.resultBefore(deadline, published); settled {
 			cancel(nil)
-			return envelope.section, envelope.err
+			return section, err
 		}
 		if !c.clock.Now().Before(deadline) || (published && !envelope.completedAt.Before(deadline)) {
 			cancel(errPackageDeadline)
 			return "", providerError("deadline")
 		}
 	}
+}
+
+func (envelope workEnvelope) resultBefore(deadline time.Time, published bool) (string, error, bool) {
+	if !published || !envelope.completedAt.Before(deadline) {
+		return "", nil, false
+	}
+	if errors.Is(envelope.cause, errCoordinatorClosing) {
+		return "", providerError("closed"), true
+	}
+	return envelope.section, envelope.err, true
 }
 
 func (c *coordinator) runWork(ctx context.Context, cancel context.CancelCauseFunc, id uint64, work func(context.Context) (string, error), state *workState) {
@@ -161,6 +164,7 @@ func (c *coordinator) runWork(ctx context.Context, cancel context.CancelCauseFun
 		envelope.section, envelope.err = work(ctx)
 	}()
 	envelope.completedAt = c.clock.Now()
+	envelope.cause = context.Cause(ctx)
 	state.publish(envelope)
 }
 

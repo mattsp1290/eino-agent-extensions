@@ -184,6 +184,18 @@ func TestCoordinatorCompletionBoundary(t *testing.T) {
 	}
 }
 
+func TestCoordinatorPublishedBeforeDeadlineIgnoresLaterPackageCause(t *testing.T) {
+	deadline := time.Now()
+	envelope := workEnvelope{
+		section: "on-time", completedAt: deadline.Add(-time.Nanosecond),
+		cause: errPackageDeadline,
+	}
+	section, err, settled := envelope.resultBefore(deadline, true)
+	if !settled || err != nil || section != "on-time" {
+		t.Fatalf("result = %q, %v, settled=%t", section, err, settled)
+	}
+}
+
 func waitCoordinatorLive(t *testing.T, coordinator *coordinator, want int) {
 	t.Helper()
 	deadline := time.NewTimer(time.Second)

@@ -148,15 +148,14 @@ func TestMountDeactivationWaitsForPlanAndPreservesProvider(t *testing.T) {
 		t.Fatalf("deactivated prompts = %#v", got)
 	}
 	newPlan.Release()
-	done := make(chan error, 1)
-	go func() { done <- mount.Close(context.Background()) }()
-	select {
-	case err := <-done:
+	closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if err := mount.Close(closeCtx); !errors.Is(err, context.DeadlineExceeded) {
+		cancel()
 		t.Fatalf("close while leased = %v", err)
-	case <-time.After(20 * time.Millisecond):
 	}
+	cancel()
 	plan.Release()
-	if err := <-done; err != nil {
+	if err := mount.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := mount.Close(context.Background()); err != nil {

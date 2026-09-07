@@ -35,7 +35,6 @@ func (sink *sectionSink) add(file instructionFile) bool {
 	}
 	if !sink.started {
 		sink.started = true
-		sink.buffer.Grow(sink.limit)
 		sink.buffer.WriteString(sectionOpen)
 		sink.buffer.WriteByte('\n')
 	}

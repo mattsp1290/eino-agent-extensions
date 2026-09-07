@@ -20,7 +20,7 @@ import (
 	store "github.com/mattsp1290/eino-agent/store/sqlite"
 )
 
-func TestIntegrationResumeIdenticalPlanRereadsCurrentInstructions(t *testing.T) {
+func TestIntegrationAcquireResumePlanRereadsCurrentInstructions(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "AGENTS.md")
 	if err := os.WriteFile(file, []byte("original-before-interruption"), 0o600); err != nil {
@@ -53,6 +53,50 @@ func TestIntegrationResumeIdenticalPlanRereadsCurrentInstructions(t *testing.T) 
 	section, err := prompts[0].Provider.ProvidePrompt(context.Background(), runtime.PromptContext{SessionID: "resume-session", RunID: "resume-run"})
 	if err != nil || !bytes.Contains([]byte(section), []byte("current-at-resume")) || bytes.Contains([]byte(section), []byte("original-before-interruption")) {
 		t.Fatalf("section = %q, err = %v", section, err)
+	}
+}
+
+func TestIntegrationResumeAcceptsIdenticalPlan(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "AGENTS.md")
+	if err := os.WriteFile(file, []byte("before-resume"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := trustedOptions(root, "")
+	descriptor := acquireIntegrationResumeDescriptor(t, base, file)
+	database, run := seedIntegrationResumeRun(t, descriptor)
+	defer func() {
+		if err := database.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	registry, mounts := mountIntegrationResumeRegistry(t, base, file)
+	defer closeIntegrationResumeMounts(t, mounts)
+	var modelCalls int
+	orchestrator := newIntegrationResumeOrchestrator(t, database, registry, integrationStreamer(func(context.Context, model.Request) ([]*einoschema.Message, error) {
+		modelCalls++
+		return []*einoschema.Message{einoschema.AssistantMessage("unexpected", nil)}, nil
+	}))
+	handle, err := orchestrator.Resume(context.Background(), run.ID)
+	if err != nil || handle == nil {
+		t.Fatalf("resume handle = %v, error = %v", handle, err)
+	}
+	var result runtime.Result
+	select {
+	case result = <-handle.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("resume timed out")
+	}
+	call, err := database.GetToolCall(context.Background(), "resume-touch-call")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Error != nil || result.Status != session.RunInterrupted || !result.Interrupted || call.Status != session.ToolCallCompleted || modelCalls != 0 || string(content) != "current-at-resume" {
+		t.Fatalf("result = %#v, call = %#v, model calls = %d, content = %q", result, call, modelCalls, content)
 	}
 }
 
