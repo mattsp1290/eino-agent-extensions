@@ -125,12 +125,14 @@ func TestProviderRecoversInternalDiscoveryPanic(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("body"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	original := readCandidate
-	readCandidate = func(context.Context, *os.Root, string, int) ([]byte, error) { panic("private internal panic") }
-	t.Cleanup(func() { readCandidate = original })
 	options := testOptions()
 	options.Resolver = ResolverFunc(func(context.Context, Request) (Workspace, error) { return Workspace{Root: root, Trusted: true}, nil })
-	_, err := newTestProvider(t, options).ProvidePrompt(context.Background(), runtime.PromptContext{})
+	canonical, err := canonicalize(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := func(context.Context, *os.Root, string, int) (candidateRead, error) { panic("private internal panic") }
+	_, err = newProviderWithReader(canonical, newCoordinator(canonical), reader).ProvidePrompt(context.Background(), runtime.PromptContext{})
 	if err == nil || err.Error() != providerError("internal").Error() || strings.Contains(err.Error(), "private") {
 		t.Fatalf("error = %v", err)
 	}

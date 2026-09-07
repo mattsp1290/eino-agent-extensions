@@ -1,6 +1,7 @@
 package workspaceinstructions
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -88,9 +89,38 @@ func TestWorkspaceCanonicalizesSymlinkDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRoot, _ := filepath.EvalSymlinks(realRoot)
 	wantBoundary, _ := filepath.EvalSymlinks(realBoundary)
-	if resolved.root != wantRoot || resolved.boundary != wantBoundary || !reflect.DeepEqual(resolved.chain, []string{".", "project"}) {
+	if resolved.boundary != wantBoundary || !reflect.DeepEqual(resolved.chain, []string{".", "project"}) {
 		t.Fatalf("resolved = %#v", resolved)
+	}
+}
+
+func TestWorkspaceRejectsBoundaryReplacementBeforeOpen(t *testing.T) {
+	parent := t.TempDir()
+	boundary := filepath.Join(parent, "boundary")
+	root := filepath.Join(boundary, "project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveWorkspace(Workspace{Root: root, Boundary: boundary}, testLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(boundary, filepath.Join(parent, "original-boundary")); err != nil {
+		t.Fatal(err)
+	}
+	replacement := t.TempDir()
+	if err := os.Mkdir(filepath.Join(replacement, "project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(replacement, "AGENTS.md"), []byte("outside replacement content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(replacement, boundary); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	files, err := collectInstructionFiles(context.Background(), resolved, []string{"AGENTS.md"}, testLimits())
+	if err == nil || !strings.Contains(err.Error(), "code=boundary") || len(files) != 0 {
+		t.Fatalf("files = %#v, error = %v", files, err)
 	}
 }

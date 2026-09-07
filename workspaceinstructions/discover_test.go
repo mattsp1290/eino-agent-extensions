@@ -6,8 +6,22 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"testing"
 )
+
+func collectInstructionFiles(ctx context.Context, workspace canonicalWorkspace, fileNames []string, limits Limits) ([]instructionFile, error) {
+	return collectInstructionFilesWithReader(ctx, workspace, fileNames, limits, defaultReadCandidate)
+}
+
+func collectInstructionFilesWithReader(ctx context.Context, workspace canonicalWorkspace, fileNames []string, limits Limits, reader candidateReader) ([]instructionFile, error) {
+	files := make([]instructionFile, 0, len(workspace.chain)*len(fileNames))
+	err := walkInstructionFiles(ctx, workspace, fileNames, limits, reader, func(file instructionFile) bool {
+		files = append(files, file)
+		return true
+	})
+	return files, err
+}
 
 func TestDiscoverOrdersChainAndConfiguredNames(t *testing.T) {
 	boundary := t.TempDir()
@@ -28,7 +42,7 @@ func TestDiscoverOrdersChainAndConfiguredNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, err := discover(context.Background(), workspace, []string{"LOCAL.md", "AGENTS.md"}, testLimits())
+	files, err := collectInstructionFiles(context.Background(), workspace, []string{"LOCAL.md", "AGENTS.md"}, testLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +86,7 @@ func TestDiscoverSkipsInvalidCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	names := []string{"missing", "directory", "inside-link", "outside-link", "nul", "invalid", "blank", "valid"}
-	files, err := discover(context.Background(), workspace, names, testLimits())
+	files, err := collectInstructionFiles(context.Background(), workspace, names, testLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +108,7 @@ func TestDiscoverSkipsUnreadableFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, err := discover(context.Background(), workspace, []string{"AGENTS.md"}, testLimits())
+	files, err := collectInstructionFiles(context.Background(), workspace, []string{"AGENTS.md"}, testLimits())
 	if err != nil || len(files) != 0 {
 		t.Fatalf("files = %#v, err = %v", files, err)
 	}
@@ -140,7 +154,7 @@ func TestDiscoverConfinesIntermediateSymlinkSwap(t *testing.T) {
 			if err := os.Symlink(linkTarget, filepath.Join(boundary, "a")); err != nil {
 				t.Skipf("symlink unavailable: %v", err)
 			}
-			files, err := discover(context.Background(), workspace, []string{"AGENTS.md"}, testLimits())
+			files, err := collectInstructionFiles(context.Background(), workspace, []string{"AGENTS.md"}, testLimits())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -170,12 +184,71 @@ func TestDiscoverTruncatesAtUTF8Boundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, err := discover(context.Background(), workspace, []string{"AGENTS.md"}, limits)
+	files, err := collectInstructionFiles(context.Background(), workspace, []string{"AGENTS.md"}, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(files) != 1 || files[0].content != "abc" || !files[0].truncated {
 		t.Fatalf("files = %#v", files)
+	}
+}
+
+func TestDiscoverRejectsFileChangedToSymlinkBetweenLookupAndOpen(t *testing.T) {
+	root := t.TempDir()
+	candidate := filepath.Join(root, "AGENTS.md")
+	if err := os.WriteFile(candidate, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "target.md"), []byte("inside target must not be admitted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := resolveWorkspace(Workspace{Root: root}, testLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	reader := func(ctx context.Context, boundary *os.Root, name string, maxBytes int) (candidateRead, error) {
+		once.Do(func() {
+			if renameErr := os.Rename(candidate, filepath.Join(root, "original.md")); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if symlinkErr := os.Symlink("target.md", candidate); symlinkErr != nil {
+				t.Fatal(symlinkErr)
+			}
+		})
+		return defaultReadCandidate(ctx, boundary, name, maxBytes)
+	}
+	files, err := collectInstructionFilesWithReader(context.Background(), workspace, []string{"AGENTS.md"}, testLimits(), reader)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("files = %#v, error = %v", files, err)
+	}
+}
+
+func TestRenderDiscoveredStopsAtSectionBudget(t *testing.T) {
+	root := t.TempDir()
+	names := []string{"A.md", "B.md", "C.md", "D.md"}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(strings.Repeat("x", 513)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := testLimits()
+	limits.MaxFileNames = len(names)
+	limits.MaxChainDepth = 1
+	limits.MaxFileBytes = 512
+	limits.MaxSectionBytes = minimumSectionBytes(names, limits)
+	workspace, err := resolveWorkspace(Workspace{Root: root}, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	reader := func(ctx context.Context, boundary *os.Root, name string, maxBytes int) (candidateRead, error) {
+		reads++
+		return defaultReadCandidate(ctx, boundary, name, maxBytes)
+	}
+	section, err := renderWorkspaceWithReader(context.Background(), workspace, names, limits, reader)
+	if err != nil || !strings.Contains(section, omittedMarker) || reads != 2 || len(section) > limits.MaxSectionBytes {
+		t.Fatalf("reads = %d, section len = %d, error = %v, section = %q", reads, len(section), err, section)
 	}
 }
 
@@ -190,7 +263,7 @@ func TestDiscoverCanceledBeforeRead(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := discover(ctx, workspace, []string{"AGENTS.md"}, testLimits()); err != context.Canceled {
+	if _, err := collectInstructionFiles(ctx, workspace, []string{"AGENTS.md"}, testLimits()); err != context.Canceled {
 		t.Fatalf("error = %v", err)
 	}
 }

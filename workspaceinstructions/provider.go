@@ -9,10 +9,15 @@ import (
 type provider struct {
 	options     canonicalOptions
 	coordinator *coordinator
+	reader      candidateReader
 }
 
 func newProvider(options canonicalOptions, coordinator *coordinator) runtime.PromptProvider {
-	return &provider{options: options, coordinator: coordinator}
+	return newProviderWithReader(options, coordinator, defaultReadCandidate)
+}
+
+func newProviderWithReader(options canonicalOptions, coordinator *coordinator, reader candidateReader) runtime.PromptProvider {
+	return &provider{options: options, coordinator: coordinator, reader: reader}
 }
 
 func (p *provider) ProvidePrompt(ctx context.Context, prompt runtime.PromptContext) (string, error) {
@@ -32,11 +37,7 @@ func (p *provider) ProvidePrompt(ctx context.Context, prompt runtime.PromptConte
 		if err != nil {
 			return "", err
 		}
-		files, err := discover(workCtx, canonical, p.options.fileNames, p.options.limits)
-		if err != nil {
-			return "", err
-		}
-		return render(files, p.options.limits), nil
+		return renderWorkspaceWithReader(workCtx, canonical, p.options.fileNames, p.options.limits, p.reader)
 	})
 }
 

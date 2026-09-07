@@ -33,6 +33,10 @@ func TestIntegrationResumeIdenticalPlanRereadsCurrentInstructions(t *testing.T) 
 	}
 	registry, mounts := mountIntegrationResumeRegistry(t, base, file)
 	defer closeIntegrationResumeMounts(t, mounts)
+	// Eino v0.3.3 Resume recovers only the durable tool-call boundary and
+	// deliberately terminates recovered runs as interrupted; it never dispatches
+	// a successor model request (runtime/interrupt.go). AcquireResumePlan is the
+	// public strict-resume seam at which a prompt capability can be exercised.
 	sealed, err := session.VerifyExtensionPlanForSession("resume-session", descriptor)
 	if err != nil {
 		t.Fatal(err)
@@ -53,21 +57,24 @@ func TestIntegrationResumeIdenticalPlanRereadsCurrentInstructions(t *testing.T) 
 }
 
 func TestIntegrationResumeRejectsEveryDriftBeforeDurableMutation(t *testing.T) {
-	mutations := map[string]func(*Options){
-		"file-name":         func(o *Options) { o.FileNames = []string{"OTHER.md"} },
-		"file-order":        func(o *Options) { o.FileNames = []string{"SECOND.md", "AGENTS.md"} },
-		"resolver-identity": func(o *Options) { o.ResolverIdentity += "-changed" },
-		"max-file-names":    func(o *Options) { o.Limits.MaxFileNames++ },
-		"max-chain-depth":   func(o *Options) { o.Limits.MaxChainDepth++ },
-		"max-file-bytes":    func(o *Options) { o.Limits.MaxFileBytes++ },
-		"max-section-bytes": func(o *Options) { o.Limits.MaxSectionBytes++ },
-		"max-in-flight":     func(o *Options) { o.Limits.MaxInFlight++ },
-		"max-wait":          func(o *Options) { o.Limits.MaxWait++ },
-		"order":             func(o *Options) { o.Order = DefaultOrder + 1 },
-		"scope":             func(o *Options) { o.Scope = extension.SessionScope("resume-session") },
+	mutations := []struct {
+		name   string
+		mutate func(*Options)
+	}{
+		{"file-name", func(o *Options) { o.FileNames = []string{"OTHER.md"} }},
+		{"file-order", func(o *Options) { o.FileNames = []string{"SECOND.md", "AGENTS.md"} }},
+		{"resolver-identity", func(o *Options) { o.ResolverIdentity += "-changed" }},
+		{"max-file-names", func(o *Options) { o.Limits.MaxFileNames++ }},
+		{"max-chain-depth", func(o *Options) { o.Limits.MaxChainDepth++ }},
+		{"max-file-bytes", func(o *Options) { o.Limits.MaxFileBytes++ }},
+		{"max-section-bytes", func(o *Options) { o.Limits.MaxSectionBytes++ }},
+		{"max-in-flight", func(o *Options) { o.Limits.MaxInFlight++ }},
+		{"max-wait", func(o *Options) { o.Limits.MaxWait++ }},
+		{"order", func(o *Options) { o.Order = DefaultOrder + 1 }},
+		{"scope", func(o *Options) { o.Scope = extension.SessionScope("resume-session") }},
 	}
-	for name, mutate := range mutations {
-		t.Run(name, func(t *testing.T) {
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
 			root := t.TempDir()
 			file := filepath.Join(root, "AGENTS.md")
 			if err := os.WriteFile(file, []byte("body"), 0o600); err != nil {
@@ -75,16 +82,20 @@ func TestIntegrationResumeRejectsEveryDriftBeforeDurableMutation(t *testing.T) {
 			}
 			base := trustedOptions(root, "")
 			base.FileNames = []string{"AGENTS.md", "SECOND.md"}
-			if name == "file-name" {
+			if mutation.name == "file-name" {
 				base.FileNames = []string{"AGENTS.md"}
 			}
 			descriptor := acquireIntegrationResumeDescriptor(t, base, file)
 			database, run := seedIntegrationResumeRun(t, descriptor)
-			defer database.Close()
+			defer func() {
+				if err := database.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			before := integrationResumeSnapshot(t, database, run)
 			changed := base
 			changed.FileNames = append([]string(nil), base.FileNames...)
-			mutate(&changed)
+			mutation.mutate(&changed)
 			registry, mounts := mountIntegrationResumeRegistry(t, changed, file)
 			defer closeIntegrationResumeMounts(t, mounts)
 			var modelCalls int
@@ -210,17 +221,6 @@ func newIntegrationResumeOrchestrator(t *testing.T, database *store.Store, regis
 		t.Fatal(err)
 	}
 	return orchestrator
-}
-
-func waitIntegrationResume(t *testing.T, handle runtime.Handle) runtime.Result {
-	t.Helper()
-	select {
-	case result := <-handle.Done():
-		return result
-	case <-time.After(3 * time.Second):
-		t.Fatal("resume timed out")
-		return runtime.Result{}
-	}
 }
 
 func integrationResumeSnapshot(t *testing.T, database *store.Store, run session.Run) []byte {

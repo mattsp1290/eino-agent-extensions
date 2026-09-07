@@ -3,6 +3,7 @@ package workspaceinstructions
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -15,42 +16,51 @@ type instructionFile struct {
 	truncated bool
 }
 
-func discover(ctx context.Context, workspace canonicalWorkspace, fileNames []string, limits Limits) ([]instructionFile, error) {
+func walkInstructionFiles(ctx context.Context, workspace canonicalWorkspace, fileNames []string, limits Limits, reader candidateReader, visit func(instructionFile) bool) error {
 	boundary, err := openBoundary(workspace)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer boundary.Close()
+	defer func() {
+		// All useful errors occur before this read-only capability is closed.
+		_ = boundary.Close()
+	}()
 
-	files := make([]instructionFile, 0, len(workspace.chain)*len(fileNames))
 	for index, directory := range workspace.chain {
 		for _, fileName := range fileNames {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return err
 			}
 			candidate := filepath.Join(directory, fileName)
 			info, err := boundary.Lstat(candidate)
 			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
-			data, err := readCandidate(ctx, boundary, candidate, limits.MaxFileBytes)
+			read, err := reader(ctx, boundary, candidate, limits.MaxFileBytes)
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
-					return nil, ctxErr
+					return ctxErr
 				}
 				continue
 			}
-			content, truncated, admitted := admitContent(data, info.Size() > int64(limits.MaxFileBytes), limits.MaxFileBytes)
+			after, err := boundary.Lstat(candidate)
+			if err != nil || !after.Mode().IsRegular() || read.info == nil || !read.info.Mode().IsRegular() ||
+				!os.SameFile(info, read.info) || !os.SameFile(read.info, after) {
+				continue
+			}
+			content, truncated, admitted := admitContent(read.data, read.info.Size() > int64(limits.MaxFileBytes), limits.MaxFileBytes)
 			if !admitted {
 				continue
 			}
-			files = append(files, instructionFile{
+			if !visit(instructionFile{
 				display: displayPath(len(workspace.chain), index, fileName),
 				content: content, truncated: truncated,
-			})
+			}) {
+				return nil
+			}
 		}
 	}
-	return files, nil
+	return nil
 }
 
 func admitContent(data []byte, sizeExceeded bool, maxBytes int) (string, bool, bool) {

@@ -2,6 +2,7 @@ package workspaceinstructions
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -13,7 +14,7 @@ type coordinator struct {
 	closed   bool
 	live     int
 	nextID   uint64
-	cancels  map[uint64]context.CancelFunc
+	cancels  map[uint64]context.CancelCauseFunc
 	done     chan struct{}
 	doneOnce sync.Once
 	clock    coordinatorClock
@@ -62,9 +63,14 @@ const (
 	rejectedSaturated
 )
 
+var (
+	errCoordinatorClosing = errors.New("workspace instructions coordinator closing")
+	errPackageDeadline    = errors.New("workspace instructions package deadline")
+)
+
 func newCoordinator(options canonicalOptions) *coordinator {
 	return &coordinator{
-		limits: options.limits, cancels: make(map[uint64]context.CancelFunc),
+		limits: options.limits, cancels: make(map[uint64]context.CancelCauseFunc),
 		done: make(chan struct{}), clock: realCoordinatorClock{},
 	}
 }
@@ -74,10 +80,15 @@ func (c *coordinator) run(ctx context.Context, work func(context.Context) (strin
 		return "", err
 	}
 	deadline := c.clock.Now().Add(c.limits.MaxWait)
-	child, cancel := context.WithDeadline(ctx, deadline)
+	deadlineCtx, stopDeadline := context.WithDeadlineCause(ctx, deadline, errPackageDeadline)
+	child, cancelChild := context.WithCancelCause(deadlineCtx)
+	cancel := func(cause error) {
+		cancelChild(cause)
+		stopDeadline()
+	}
 	id, status := c.acquire(cancel)
 	if status != admitted {
-		cancel()
+		cancel(nil)
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
@@ -87,7 +98,7 @@ func (c *coordinator) run(ctx context.Context, work func(context.Context) (strin
 		return "", providerError("saturated")
 	}
 	if err := ctx.Err(); err != nil {
-		cancel()
+		cancel(nil)
 		c.release(id)
 		return "", err
 	}
@@ -107,29 +118,37 @@ func (c *coordinator) run(ctx context.Context, work func(context.Context) (strin
 	for {
 		select {
 		case <-ctx.Done():
-			cancel()
+			cancel(nil)
 			return "", ctx.Err()
 		case <-state.done:
 		case <-timer.C():
 		}
 		if err := ctx.Err(); err != nil {
-			cancel()
+			cancel(nil)
 			return "", err
 		}
 		envelope, published := state.snapshot()
 		if published && envelope.completedAt.Before(deadline) {
-			cancel()
+			if errors.Is(context.Cause(child), errCoordinatorClosing) {
+				cancel(nil)
+				return "", providerError("closed")
+			}
+			if errors.Is(context.Cause(child), errPackageDeadline) {
+				cancel(errPackageDeadline)
+				return "", providerError("deadline")
+			}
+			cancel(nil)
 			return envelope.section, envelope.err
 		}
 		if !c.clock.Now().Before(deadline) || (published && !envelope.completedAt.Before(deadline)) {
-			cancel()
+			cancel(errPackageDeadline)
 			return "", providerError("deadline")
 		}
 	}
 }
 
-func (c *coordinator) runWork(ctx context.Context, cancel context.CancelFunc, id uint64, work func(context.Context) (string, error), state *workState) {
-	defer cancel()
+func (c *coordinator) runWork(ctx context.Context, cancel context.CancelCauseFunc, id uint64, work func(context.Context) (string, error), state *workState) {
+	defer cancel(nil)
 	defer c.release(id)
 	envelope := workEnvelope{}
 	func() {
@@ -161,7 +180,7 @@ func (state *workState) snapshot() (workEnvelope, bool) {
 	return *state.envelope, true
 }
 
-func (c *coordinator) acquire(cancel context.CancelFunc) (uint64, admission) {
+func (c *coordinator) acquire(cancel context.CancelCauseFunc) (uint64, admission) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing || c.closed {
@@ -203,7 +222,7 @@ func (c *coordinator) Close(ctx context.Context) error {
 		return nil
 	}
 	c.closing = true
-	cancels := make([]context.CancelFunc, 0, len(c.cancels))
+	cancels := make([]context.CancelCauseFunc, 0, len(c.cancels))
 	for _, cancel := range c.cancels {
 		cancels = append(cancels, cancel)
 	}
@@ -214,7 +233,7 @@ func (c *coordinator) Close(ctx context.Context) error {
 	done := c.done
 	c.mu.Unlock()
 	for _, cancel := range cancels {
-		cancel()
+		cancel(errCoordinatorClosing)
 	}
 	select {
 	case <-done:

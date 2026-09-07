@@ -39,7 +39,13 @@ func TestIntegrationTrustedChainRereadsAndPersistsEveryModelRequest(t *testing.T
 		}
 	}
 	harness := newIntegrationHarness(t)
-	harness.mountInstructions("trusted", trustedOptions(root, boundary))
+	options := trustedOptions(root, boundary)
+	var resolverRequests []Request
+	options.Resolver = ResolverFunc(func(_ context.Context, request Request) (Workspace, error) {
+		resolverRequests = append(resolverRequests, request)
+		return Workspace{Root: root, Boundary: boundary, Trusted: true}, nil
+	})
+	harness.mountInstructions("trusted", options)
 	harness.mountTouch(filepath.Join(root, "AGENTS.md"), "rewritten-root-body")
 	var systems []string
 	streamer := integrationStreamer(func(_ context.Context, request model.Request) ([]*einoschema.Message, error) {
@@ -56,6 +62,14 @@ func TestIntegrationTrustedChainRereadsAndPersistsEveryModelRequest(t *testing.T
 	result := harness.run("trusted-session", streamer)
 	if result.Status != session.RunCompleted || result.Error != nil || len(systems) != 2 {
 		t.Fatalf("result = %#v, systems = %#v", result, systems)
+	}
+	if len(resolverRequests) != 2 {
+		t.Fatalf("resolver requests = %#v", resolverRequests)
+	}
+	for index, request := range resolverRequests {
+		if request.SessionID != "trusted-session" || request.RunID != result.RunID || request.EpochID == "" || request.Attempt != 1 || request.Step != index+1 || request.AgentName != "workspace-integration-agent" || request.ProviderID != "workspace-integration-provider" || request.ModelID != "workspace-integration-model" {
+			t.Fatalf("resolver request[%d] = %#v", index, request)
+		}
 	}
 	first := systems[0]
 	positions := []int{strings.Index(first, `path="../../AGENTS.md"`), strings.Index(first, `path="../AGENTS.md"`), strings.Index(first, `path="./AGENTS.md"`)}
@@ -76,18 +90,22 @@ func TestIntegrationTrustedChainRereadsAndPersistsEveryModelRequest(t *testing.T
 
 func TestIntegrationEmptyWorkspaceOutcomesCompleteWithoutSection(t *testing.T) {
 	root := t.TempDir()
-	for name, workspace := range map[string]Workspace{
-		"untrusted":    {Root: "/private/untrusted", Trusted: false},
-		"no-workspace": {Root: "", Trusted: true},
-		"missing-file": {Root: root, Trusted: true},
-	} {
-		t.Run(name, func(t *testing.T) {
+	tests := []struct {
+		name      string
+		workspace Workspace
+	}{
+		{"untrusted", Workspace{Root: "/private/untrusted", Trusted: false}},
+		{"no-workspace", Workspace{Root: "", Trusted: true}},
+		{"missing-file", Workspace{Root: root, Trusted: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			harness := newIntegrationHarness(t)
 			options := testOptions()
-			options.Resolver = ResolverFunc(func(context.Context, Request) (Workspace, error) { return workspace, nil })
-			harness.mountInstructions(name, options)
+			options.Resolver = ResolverFunc(func(context.Context, Request) (Workspace, error) { return test.workspace, nil })
+			harness.mountInstructions(test.name, options)
 			var systems []string
-			result := harness.run(session.ID(name), successfulStreamer(&systems))
+			result := harness.run(session.ID(test.name), successfulStreamer(&systems))
 			if result.Status != session.RunCompleted || result.Error != nil || len(systems) != 1 || systems[0] != integrationBasePrompt {
 				t.Fatalf("result = %#v, systems = %#v", result, systems)
 			}
@@ -113,32 +131,42 @@ func TestIntegrationTruncatesInstructionFile(t *testing.T) {
 }
 
 func TestIntegrationResolverFaultAndDeadlineFailWithoutRetry(t *testing.T) {
-	for name, configure := range map[string]func(*Options){
-		"resolver": func(options *Options) {
+	tests := []struct {
+		name      string
+		configure func(*Options)
+	}{
+		{"resolver", func(options *Options) {
 			options.Resolver = ResolverFunc(func(context.Context, Request) (Workspace, error) {
 				return Workspace{}, errors.New("private fixture /path")
 			})
-		},
-		"deadline": func(options *Options) {
+		}},
+		{"deadline", func(options *Options) {
 			options.Limits.MaxWait = 10 * time.Millisecond
 			options.Resolver = ResolverFunc(func(ctx context.Context, _ Request) (Workspace, error) {
 				<-ctx.Done()
 				return Workspace{}, ctx.Err()
 			})
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			harness := newIntegrationHarness(t)
 			options := testOptions()
-			configure(&options)
-			harness.mountInstructions(name, options)
+			test.configure(&options)
+			resolverCalls := 0
+			resolver := options.Resolver
+			options.Resolver = ResolverFunc(func(ctx context.Context, request Request) (Workspace, error) {
+				resolverCalls++
+				return resolver.ResolveWorkspace(ctx, request)
+			})
+			harness.mountInstructions(test.name, options)
 			var calls int
-			result := harness.run(session.ID(name+"-session"), integrationStreamer(func(context.Context, model.Request) ([]*einoschema.Message, error) {
+			result := harness.run(session.ID(test.name+"-session"), integrationStreamer(func(context.Context, model.Request) ([]*einoschema.Message, error) {
 				calls++
 				return []*einoschema.Message{einoschema.AssistantMessage("unexpected", nil)}, nil
 			}))
-			if result.Status == session.RunCompleted || result.Error == nil || !strings.Contains(result.Error.Error(), "code="+name) || strings.Contains(result.Error.Error(), "private") || calls != 0 {
-				t.Fatalf("result = %#v, model calls = %d", result, calls)
+			if result.Status == session.RunCompleted || result.Error == nil || !strings.Contains(result.Error.Error(), "code="+test.name) || strings.Contains(result.Error.Error(), "private") || calls != 0 || resolverCalls != 1 {
+				t.Fatalf("result = %#v, model calls = %d, resolver calls = %d", result, calls, resolverCalls)
 			}
 		})
 	}
@@ -173,17 +201,19 @@ func TestIntegrationBlockedReadReturnsDeadlineAndRetainsCloseSlot(t *testing.T) 
 	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	original := readCandidate
-	readCandidate = func(context.Context, *os.Root, string, int) ([]byte, error) {
+	reader := func(context.Context, *os.Root, string, int) (candidateRead, error) {
 		close(entered)
 		<-release
-		return []byte("late"), nil
+		return candidateRead{data: []byte("late")}, nil
 	}
-	t.Cleanup(func() { readCandidate = original })
 	harness := newIntegrationHarness(t)
 	options := trustedOptions(root, "")
 	options.Limits.MaxWait = 10 * time.Millisecond
-	mount := harness.mountInstructions("blocked-read", options)
+	mount, err := mountWithReader(context.Background(), harness.registry, testComponent("blocked-read"), options, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.mounts = append(harness.mounts, mount)
 	resultDone := make(chan runtime.Result, 1)
 	go func() {
 		resultDone <- harness.run("blocked-read-session", successfulStreamer(&[]string{}))
@@ -195,7 +225,7 @@ func TestIntegrationBlockedReadReturnsDeadlineAndRetainsCloseSlot(t *testing.T) 
 	}
 	mount.Deactivate()
 	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	err := mount.Close(closeCtx)
+	err = mount.Close(closeCtx)
 	cancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("close while blocked = %v", err)

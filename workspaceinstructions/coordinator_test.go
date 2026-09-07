@@ -114,11 +114,37 @@ func TestCoordinatorCloseDeadlineAndIdempotence(t *testing.T) {
 	}
 }
 
+func TestCoordinatorCloseCancellationIsSanitized(t *testing.T) {
+	coordinator := testCoordinator(t, nil)
+	entered := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := coordinator.run(context.Background(), func(workCtx context.Context) (string, error) {
+			close(entered)
+			<-workCtx.Done()
+			return "", workCtx.Err()
+		})
+		result <- err
+	}()
+	<-entered
+	if err := coordinator.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	err := <-result
+	if err == nil || err.Error() != providerError("closed").Error() || errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v", err)
+	}
+}
+
 func TestCoordinatorCompletionBoundary(t *testing.T) {
-	for name, offset := range map[string]time.Duration{
-		"strictly-before": -time.Nanosecond, "exactly-at": 0, "after": time.Nanosecond,
-	} {
-		t.Run(name, func(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset time.Duration
+	}{
+		{"strictly-before", -time.Nanosecond}, {"exactly-at", 0}, {"after", time.Nanosecond},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			coordinator := testCoordinator(t, func(l *Limits) { l.MaxWait = 5 * time.Second })
 			clock := newWorkspaceBlockedClock()
 			coordinator.clock = clock
@@ -141,13 +167,13 @@ func TestCoordinatorCompletionBoundary(t *testing.T) {
 			}()
 			<-entered
 			<-clock.timerRequested
-			clock.set(clock.base.Add(5*time.Second + offset))
+			clock.set(clock.base.Add(5*time.Second + test.offset))
 			close(release)
 			waitCoordinatorLive(t, coordinator, 0)
 			clock.fire()
 			close(clock.allowTimer)
 			result := <-done
-			if offset < 0 {
+			if test.offset < 0 {
 				if result.err != nil || result.section != "section" {
 					t.Fatalf("result = %q, %v", result.section, result.err)
 				}

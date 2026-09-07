@@ -11,6 +11,10 @@ import (
 // Mount validates and freezes options, constructs one private coordinator,
 // and atomically registers exactly one workspace instruction prompt section.
 func Mount(ctx context.Context, registry *composition.Registry, component extension.Component, options Options) (*composition.Mount, error) {
+	return mountWithReader(ctx, registry, component, options, defaultReadCandidate)
+}
+
+func mountWithReader(ctx context.Context, registry *composition.Registry, component extension.Component, options Options, reader candidateReader) (*composition.Mount, error) {
 	if registry == nil {
 		return nil, mountError("registry-required")
 	}
@@ -40,7 +44,7 @@ func Mount(ctx context.Context, registry *composition.Registry, component extens
 		}
 		return registrar.Prompt(composition.PromptRegistration{
 			ID: registrationID, Name: PromptName, Order: canonical.order,
-			Scope: canonical.scope, Provider: newProvider(canonical, coordinator),
+			Scope: canonical.scope, Provider: newProviderWithReader(canonical, coordinator, reader),
 		})
 	}))
 }

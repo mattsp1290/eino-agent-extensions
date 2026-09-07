@@ -7,13 +7,13 @@ import (
 )
 
 type canonicalWorkspace struct {
-	root     string
-	boundary string
-	chain    []string
+	boundary     string
+	boundaryInfo os.FileInfo
+	chain        []string
 }
 
 func resolveWorkspace(workspace Workspace, limits Limits) (canonicalWorkspace, error) {
-	root, err := canonicalDirectory(workspace.Root, "root")
+	root, _, err := canonicalDirectory(workspace.Root, "root")
 	if err != nil {
 		return canonicalWorkspace{}, err
 	}
@@ -21,7 +21,7 @@ func resolveWorkspace(workspace Workspace, limits Limits) (canonicalWorkspace, e
 	if boundaryInput == "" {
 		boundaryInput = workspace.Root
 	}
-	boundary, err := canonicalDirectory(boundaryInput, "boundary")
+	boundary, boundaryInfo, err := canonicalDirectory(boundaryInput, "boundary")
 	if err != nil {
 		return canonicalWorkspace{}, err
 	}
@@ -43,31 +43,36 @@ func resolveWorkspace(workspace Workspace, limits Limits) (canonicalWorkspace, e
 	if len(chain) > limits.MaxChainDepth {
 		return canonicalWorkspace{}, workspaceError("chain-depth")
 	}
-	return canonicalWorkspace{root: root, boundary: boundary, chain: chain}, nil
+	return canonicalWorkspace{boundary: boundary, boundaryInfo: boundaryInfo, chain: chain}, nil
 }
 
-func canonicalDirectory(value, code string) (string, error) {
+func canonicalDirectory(value, code string) (string, os.FileInfo, error) {
 	if !filepath.IsAbs(value) {
-		return "", workspaceError(code)
+		return "", nil, workspaceError(code)
 	}
 	abs, err := filepath.Abs(filepath.Clean(value))
 	if err != nil {
-		return "", workspaceError(code)
+		return "", nil, workspaceError(code)
 	}
 	canonical, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", workspaceError(code)
+		return "", nil, workspaceError(code)
 	}
 	info, err := os.Stat(canonical)
 	if err != nil || !info.IsDir() {
-		return "", workspaceError(code)
+		return "", nil, workspaceError(code)
 	}
-	return canonical, nil
+	return canonical, info, nil
 }
 
 func openBoundary(workspace canonicalWorkspace) (*os.Root, error) {
 	root, err := os.OpenRoot(workspace.boundary)
 	if err != nil {
+		return nil, workspaceError("boundary")
+	}
+	openedInfo, err := root.Stat(".")
+	if err != nil || !os.SameFile(workspace.boundaryInfo, openedInfo) {
+		_ = root.Close()
 		return nil, workspaceError("boundary")
 	}
 	return root, nil

@@ -10,4 +10,8 @@
 // become part of Eino's durable model-request audit records. Hosts must not put
 // secrets in instruction files and must drain acquired plans before changing or
 // removing a mount.
+//
+// A deadline bounds the provider caller's wait, but a blocked filesystem call
+// or non-cooperative resolver retains its goroutine and capacity slot until it
+// exits. This package does not provide Wasm delivery or Pi/comparator parity.
 package workspaceinstructions

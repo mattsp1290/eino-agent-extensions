@@ -34,12 +34,6 @@ const (
 	maxWait                  = 10 * time.Minute
 	maxResolverIdentityBytes = 256
 	maxFileNameBytes         = 255
-
-	// In addition to the longest fixed envelope strings, this reserves room
-	// for the maximum root-relative display path and either visible marker.
-	envelopeOverhead = len(`<workspace_instructions version="workspace-instructions-render-v1">`) +
-		len(`</workspace_instructions>`) + len(`<file path="" truncated="true">`) +
-		len(`</file>`) + 512
 )
 
 // Limits bounds all package-owned discovery, output, waiting, and concurrency.
@@ -135,7 +129,7 @@ func canonicalize(options Options) (canonicalOptions, error) {
 	if !validIdentity(canonical.resolverIdentity) {
 		return canonicalOptions{}, configError("resolver-identity")
 	}
-	if err := validateLimits(canonical.limits); err != nil {
+	if err := validateLimits(canonical.fileNames, canonical.limits); err != nil {
 		return canonicalOptions{}, err
 	}
 	if len(canonical.fileNames) > canonical.limits.MaxFileNames {
@@ -201,7 +195,7 @@ func validFileName(name string) bool {
 	return true
 }
 
-func validateLimits(limits Limits) error {
+func validateLimits(fileNames []string, limits Limits) error {
 	if limits.MaxFileNames <= 0 || limits.MaxFileNames > maxFileNames {
 		return configError("max-file-names")
 	}
@@ -211,7 +205,7 @@ func validateLimits(limits Limits) error {
 	if limits.MaxFileBytes <= 0 || limits.MaxFileBytes > maxFileBytes {
 		return configError("max-file-bytes")
 	}
-	if limits.MaxSectionBytes < limits.MaxFileBytes+envelopeOverhead || limits.MaxSectionBytes > maxSectionBytes {
+	if limits.MaxSectionBytes > maxSectionBytes || limits.MaxSectionBytes < minimumSectionBytes(fileNames, limits) {
 		return configError("max-section-bytes")
 	}
 	if limits.MaxInFlight <= 0 || limits.MaxInFlight > maxInFlight {

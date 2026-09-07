@@ -190,24 +190,27 @@ func TestMountStrictResumeFingerprintTracksAllBehavior(t *testing.T) {
 	resumed.Release()
 	closeTestMount(t, equivalentMount)
 
-	mutations := map[string]func(*Options){
-		"file-name":     func(o *Options) { o.FileNames = []string{"A", "C"} },
-		"file-order":    func(o *Options) { o.FileNames = []string{"B", "A"} },
-		"identity":      func(o *Options) { o.ResolverIdentity += "-changed" },
-		"file-count":    func(o *Options) { o.Limits.MaxFileNames++ },
-		"depth":         func(o *Options) { o.Limits.MaxChainDepth++ },
-		"file-bytes":    func(o *Options) { o.Limits.MaxFileBytes++ },
-		"section-bytes": func(o *Options) { o.Limits.MaxSectionBytes++ },
-		"capacity":      func(o *Options) { o.Limits.MaxInFlight++ },
-		"wait":          func(o *Options) { o.Limits.MaxWait++ },
-		"order":         func(o *Options) { o.Order = 999 },
-		"scope":         func(o *Options) { o.Scope = extension.SessionScope("resume-session") },
+	mutations := []struct {
+		name   string
+		mutate func(*Options)
+	}{
+		{"file-name", func(o *Options) { o.FileNames = []string{"A", "C"} }},
+		{"file-order", func(o *Options) { o.FileNames = []string{"B", "A"} }},
+		{"identity", func(o *Options) { o.ResolverIdentity += "-changed" }},
+		{"file-count", func(o *Options) { o.Limits.MaxFileNames++ }},
+		{"depth", func(o *Options) { o.Limits.MaxChainDepth++ }},
+		{"file-bytes", func(o *Options) { o.Limits.MaxFileBytes++ }},
+		{"section-bytes", func(o *Options) { o.Limits.MaxSectionBytes++ }},
+		{"capacity", func(o *Options) { o.Limits.MaxInFlight++ }},
+		{"wait", func(o *Options) { o.Limits.MaxWait++ }},
+		{"order", func(o *Options) { o.Order = 999 }},
+		{"scope", func(o *Options) { o.Scope = extension.SessionScope("resume-session") }},
 	}
-	for name, mutate := range mutations {
-		t.Run(name, func(t *testing.T) {
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
 			changed := base
 			changed.FileNames = append([]string(nil), base.FileNames...)
-			mutate(&changed)
+			mutation.mutate(&changed)
 			changedRegistry, changedMount := mountTestRegistry(t, testComponent("base"), changed)
 			defer closeTestMount(t, changedMount)
 			resumed, err := changedRegistry.AcquireResumePlan(context.Background(), runtime.ResumePlanRequest{SessionID: "resume-session", Plan: sealed})

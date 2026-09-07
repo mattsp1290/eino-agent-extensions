@@ -40,7 +40,7 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 	}
 	registry, err := composition.NewRegistry(nil)
 	if err != nil {
-		database.Close()
+		_ = database.Close()
 		t.Fatal(err)
 	}
 	harness := &integrationHarness{t: t, database: database, registry: registry, ids: &integrationIDs{}}

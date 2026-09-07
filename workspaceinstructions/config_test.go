@@ -127,8 +127,9 @@ func TestConfigNilResolverForms(t *testing.T) {
 func TestConfigLimitsBoundaries(t *testing.T) {
 	validMin := Limits{
 		MaxFileNames: 1, MaxChainDepth: 1, MaxFileBytes: 1,
-		MaxSectionBytes: 1 + envelopeOverhead, MaxInFlight: 1, MaxWait: time.Nanosecond,
+		MaxInFlight: 1, MaxWait: time.Nanosecond,
 	}
+	validMin.MaxSectionBytes = minimumSectionBytes([]string{DefaultFileName}, validMin)
 	validMax := Limits{
 		MaxFileNames: maxFileNames, MaxChainDepth: maxChainDepth, MaxFileBytes: maxFileBytes,
 		MaxSectionBytes: maxSectionBytes, MaxInFlight: maxInFlight, MaxWait: maxWait,
@@ -154,7 +155,7 @@ func TestConfigLimitsBoundaries(t *testing.T) {
 		{"depth-high", "max-chain-depth", func(l *Limits) { l.MaxChainDepth = maxChainDepth + 1 }},
 		{"file-low", "max-file-bytes", func(l *Limits) { l.MaxFileBytes = 0 }},
 		{"file-high", "max-file-bytes", func(l *Limits) { l.MaxFileBytes = maxFileBytes + 1 }},
-		{"section-low", "max-section-bytes", func(l *Limits) { l.MaxSectionBytes = l.MaxFileBytes + envelopeOverhead - 1 }},
+		{"section-low", "max-section-bytes", func(l *Limits) { l.MaxSectionBytes = minimumSectionBytes([]string{DefaultFileName}, *l) - 1 }},
 		{"section-high", "max-section-bytes", func(l *Limits) { l.MaxSectionBytes = maxSectionBytes + 1 }},
 		{"flight-low", "max-in-flight", func(l *Limits) { l.MaxInFlight = 0 }},
 		{"flight-high", "max-in-flight", func(l *Limits) { l.MaxInFlight = maxInFlight + 1 }},
