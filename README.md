@@ -4,8 +4,9 @@ This repository contains focused extensions for
 [`github.com/mattsp1290/eino-agent`](https://github.com/mattsp1290/eino-agent).
 It currently provides a session-scoped Python REPL, bounded background command
 jobs, a host-mediated `ask_user` tool, a bounded delegated-task bridge, a
-bounded host-mediated `web_search` bridge, and a trusted native tool-result
-secret redactor, all verified against Eino Agent v0.3.3.
+bounded host-mediated `web_search` bridge, a trusted workspace-instructions
+prompt section, and a trusted native tool-result secret redactor, all verified
+against Eino Agent v0.3.3.
 
 ## Session-scoped Python REPL
 
@@ -499,6 +500,111 @@ credential-free registry, permission, orchestrator, and in-memory SQLite
 journey. This package does not implement Pi's extension loader or rendering,
 Firecrawl search/scrape/crawl, multi-query generated-answer or result-storage
 flows, URL fetching, or any provider integration.
+
+## Workspace instructions prompt section
+
+`github.com/mattsp1290/eino-agent-extensions/workspaceinstructions` atomically
+mounts one prompt registration named `workspace/instructions`. The host resolves
+the trusted workspace for every model call; the package reads configured plain
+file names from the admitted boundary down to the workspace root and renders
+them as one bounded section in Eino's single system prompt.
+
+```go
+mount, err := workspaceinstructions.Mount(ctx, registry, component,
+	workspaceinstructions.Options{
+		Resolver: workspaceinstructions.ResolverFunc(func(ctx context.Context,
+			request workspaceinstructions.Request,
+		) (workspaceinstructions.Workspace, error) {
+			// Map request.SessionID to host-owned workspace and trust state.
+			return workspaceinstructions.Workspace{
+				Root: workspaceRoot, Boundary: repositoryBoundary, Trusted: true,
+			}, nil
+		}),
+		ResolverIdentity: "host-workspace-router-v1", // non-secret; rotate with behavior
+		FileNames: []string{"AGENTS.md"},
+		Limits: workspaceinstructions.Limits{
+			MaxFileNames: 4, MaxChainDepth: 16, MaxFileBytes: 32 << 10,
+			MaxSectionBytes: 128 << 10, MaxInFlight: 16,
+			MaxWait: 2 * time.Second,
+		},
+	})
+if err != nil {
+	return err
+}
+defer func() {
+	mount.Deactivate()
+	// First drain or interrupt runs and release their frozen plans.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if closeErr := mount.Close(closeCtx); closeErr != nil {
+		log.Printf("workspace instructions mount did not quiesce: %v", closeErr)
+	}
+}()
+```
+
+The discovery chain includes the boundary and root, outermost first. A boundary
+equal to the root reads only the root. In each directory, file-name order is the
+configured order; no directory listing or recursive search occurs. Nil
+`FileNames` selects `AGENTS.md`, while an explicitly empty list is invalid.
+Missing, unreadable, non-regular, symlinked, empty, NUL-bearing, or invalid-UTF-8
+files are skipped. An oversized file is cut at a UTF-8 boundary and visibly
+marked; remaining files that cannot fit are visibly omitted. If no file is
+admitted, Eino omits the section and the run continues.
+
+Files are re-read on every model call, including later steps and attempts of the
+same run; the package has no cache or watcher. Zero scope selects global scope,
+and zero order selects `workspaceinstructions.DefaultOrder` (100), after the
+runtime base prompt. A session mount shadows a global mount with the same
+`PromptName` for only that session. File names and their order, all limits,
+`ResolverIdentity`, the registration, and the versioned render format enter
+`ConfigHash`; the resolver value, host state, scope, and order do not. Scope and
+order are frozen separately in Eino's durable plan identity.
+
+The resolver must be concurrency-safe, honor cancellation, and accept every
+durable identity in `workspaceinstructions.Request`. `MaxWait` covers resolver
+work, workspace validation, file reads, and rendering. `MaxInFlight` is a
+per-mount, non-queuing limit. Resolver faults and panics, malformed workspaces,
+saturation, and deadline expiry return sanitized errors and fail that model
+attempt without retry; they never silently drop policy. Size `MaxInFlight` for
+the host's concurrent-run count.
+
+### Workspace trust and durability boundary
+
+This is trusted native code, not a sandbox. The resolver makes the trust
+decision; an untrusted or absent workspace contributes nothing. The package
+validates structure and containment but neither sanitizes nor interprets the
+semantics of an admitted instruction file. Rendered instructions are persisted
+in Eino's model-request audit records. Never put secrets in instruction files:
+`toolresultredactor` scans tool results, not system prompts.
+
+Root and boundary are canonicalized and must be an ancestor-or-equal pair.
+Every candidate access then goes through one `os.Root` opened at the boundary,
+so the operating system rejects symlink escapes at any path component;
+instruction-file symlinks are skipped even when their target is inside the
+boundary. Root-relative `path` labels such as `../AGENTS.md` avoid absolute host
+paths, but they are model guidance, not tamper-evident provenance. File bodies
+remain verbatim and can forge envelope text.
+
+A blocked filesystem or non-cooperative resolver call cannot be forcibly
+terminated. The caller receives `code=deadline`, while that goroutine retains
+its slot until it exits; later calls can receive `code=saturated`. One global
+mount shares this pool across all sessions, so a stalled workspace can exhaust
+capacity for unrelated sessions. Hosts serving several isolation boundaries
+should mount one instance per boundary—typically session scoped—and treat
+sustained saturation as a host-level outage signal.
+
+`MaxSectionBytes`, the base prompt, history, and tool schemas together must fit
+under the orchestrator model-request ledger cap (4 MiB by default, configurable
+with `runtime.WithModelRequestMaxBytes`). An oversized audited request fails
+with `session.ErrModelRequestTooLarge`. Linux and macOS are tested; Windows
+behavior is not exercised by this repository's CI.
+
+Strict resume requires the identical artifact, configuration hash, prompt name,
+scope, and order. Drain unfinished runs before changing limits, file names,
+resolver identity, placement, or artifact identity. To remove the extension,
+deactivate it, release acquired plans, then close it with a deadline. See
+[`examples/workspace-instructions`](examples/workspace-instructions) for a
+credential-free deterministic frozen-plan example.
 
 
 ## Tool-result redactor
