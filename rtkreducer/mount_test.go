@@ -100,6 +100,20 @@ func TestMountRejectsDigestAndFilesystemPolicyFailures(t *testing.T) {
 			value.ExecutableSHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		}, "executable-digest-mismatch"},
 		{"missing executable", func(value *Options) { value.ExecutablePath = "/definitely/missing/rtk" }, "executable-path"},
+		{"non-executable file", func(value *Options) {
+			contents, err := os.ReadFile(value.ExecutablePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "rtk")
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			value.ExecutablePath = path
+		}, "executable-permission"},
 		{"missing temp root", func(value *Options) { value.TempRoot = "/definitely/missing/tmp" }, "temp-root"},
 		{"shared temp root", func(value *Options) {
 			if err := os.Chmod(value.TempRoot, 0o777); err != nil {

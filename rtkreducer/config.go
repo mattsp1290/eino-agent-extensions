@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/mattsp1290/eino-agent-extensions/toolresultredactor"
 	"github.com/mattsp1290/eino-agent/extension"
 )
 
@@ -18,11 +19,6 @@ const (
 	// DefaultOrder is used when Options.Order is zero. Hosts should leave room
 	// after this transform for their final result redactor.
 	DefaultOrder = 1000
-
-	// The reducer must run before the final redactor. Keep this value in sync
-	// with the redactor's public ordering contract without importing that
-	// package solely for a constant.
-	lateRedactorOrder = 1_000_000
 
 	rtkVersion                 = "0.48.0"
 	environmentContractVersion = "private-env-v1"
@@ -91,7 +87,9 @@ type Binding struct {
 }
 
 // Limits bounds policy and callback-owned work. Every field is required and
-// must be positive. Values above the package's absolute guards are rejected.
+// must be positive. Hosts must choose every bound explicitly so upgrades never
+// opt existing deployments into newly introduced resource budgets. Values
+// above the package's absolute guards are rejected.
 type Limits struct {
 	MaxBindings         int
 	MaxFieldsPerBinding int
@@ -191,7 +189,7 @@ func canonicalize(options Options) (canonicalOptions, error) {
 	if err := extension.ValidateScope(result.scope); err != nil {
 		return canonicalOptions{}, configError("scope")
 	}
-	if result.order >= lateRedactorOrder {
+	if result.order >= toolresultredactor.LateOrder {
 		return canonicalOptions{}, configError("order-too-late")
 	}
 	if err := validateLimits(result.limits); err != nil {

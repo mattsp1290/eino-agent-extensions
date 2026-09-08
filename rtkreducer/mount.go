@@ -99,6 +99,9 @@ func verifyExecutable(ctx context.Context, path, expected string) (string, error
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxExecutableBytes {
 		return "", mountError("executable-file")
 	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", mountError("executable-permission")
+	}
 	file, err := os.Open(resolved)
 	if err != nil {
 		return "", mountError("executable-read")

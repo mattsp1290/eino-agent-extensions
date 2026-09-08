@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattsp1290/eino-agent-extensions/toolresultredactor"
 	"github.com/mattsp1290/eino-agent/extension"
 )
 
@@ -104,7 +105,7 @@ func TestConfigValidationRejectsInvalidPolicy(t *testing.T) {
 	}{
 		{"no bindings", func(value *Options) { value.Bindings = nil }, "bindings-required"},
 		{"invalid digest", func(value *Options) { value.ExecutableSHA256 = "SECRET" }, "executable-digest"},
-		{"too late", func(value *Options) { value.Order = lateRedactorOrder }, "order-too-late"},
+		{"too late", func(value *Options) { value.Order = toolresultredactor.LateOrder }, "order-too-late"},
 		{"duplicate tool", func(value *Options) { value.Bindings = append(value.Bindings, value.Bindings[0]) }, "duplicate-tool"},
 		{"duplicate field", func(value *Options) {
 			value.Bindings[0].Fields = append(value.Bindings[0].Fields, value.Bindings[0].Fields[0])
