@@ -37,6 +37,8 @@ jobs:
           output_dir="$(mktemp -d)"
           GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./backgroundjobs -o "$output_dir/backgroundjobs.test.exe"
           GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./pythonrepl -o "$output_dir/pythonrepl.test.exe"
+          GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./commandguard -o "$output_dir/commandguard.test.exe"
+          GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./examples/command-guard -o "$output_dir/command-guard-example.test.exe"
       - name: Test
         run: GOWORK=off go test ./...
         env:
@@ -83,3 +85,33 @@ jobs:
         run: GOWORK=off go test -race ./pythonrepl
         env:
           PYTHON_REPL_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+
+  command-guard-matrix:
+    name: Command guard (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Install and verify required Bash 5+
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            brew install bash
+            guard_bash="$(brew --prefix bash)/bin/bash"
+          else
+            guard_bash=/bin/bash
+          fi
+          "$guard_bash" --noprofile --norc -c '(( BASH_VERSINFO[0] >= 5 ))'
+          echo "COMMAND_GUARD_TEST_BASH=$guard_bash" >> "$GITHUB_ENV"
+      - name: Test guard, production process tools, and portable example
+        run: GOWORK=off go test ./commandguard ./examples/command-guard
+      - name: Race test guard
+        run: GOWORK=off go test -race ./commandguard
