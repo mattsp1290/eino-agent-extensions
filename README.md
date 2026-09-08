@@ -5,7 +5,8 @@ This repository contains focused extensions for
 It currently provides a session-scoped Python REPL, bounded background command
 jobs, a host-mediated `ask_user` tool, a bounded delegated-task bridge, a
 bounded host-mediated `web_search` bridge, a trusted workspace-instructions
-prompt section, and a trusted native tool-result secret redactor, all verified
+prompt section, a trusted native tool-result secret redactor, and a command-policy
+guard, all verified
 against Eino Agent v0.3.3.
 
 ## Session-scoped Python REPL
@@ -751,3 +752,188 @@ GOWORK=off go vet ./...
 GOWORK=off go test ./...
 GOWORK=off go test -race ./...
 ```
+
+## Command-policy guard
+
+`commandguard` atomically mounts one native deny-only guard before Eino's
+permission policy and command executor. The host supplies executable/prefix
+rules and finite limits. A matched rule, unreliable analysis, invalid covered
+input, or exhausted bound denies the entire call. A complete nonmatch abstains
+and leaves permissions and approval requirements in force.
+
+```go
+bindings := append(commandguard.DefaultBindings(), commandguard.Binding{
+    ToolName: "host_command", CommandField: "command",
+})
+mount, err := commandguard.Mount(ctx, registry, component, commandguard.Options{
+    Bindings: bindings,
+    Rules: []commandguard.Rule{{
+        ID: "host-git-push", Executable: "git", ArgPrefix: []string{"push"},
+    }},
+    Limits: commandguard.Limits{
+        MaxBindings: 8, MaxRules: 32, MaxRuleBytes: 2048, MaxPrefixArgs: 16,
+        MaxRawInputBytes: 16384, MaxJSONDepth: 16, MaxJSONNodes: 256,
+        MaxCommandBytes: 4096, MaxAnalysisBytes: 8192,
+        MaxASTNodes: 2048, MaxASTDepth: 64, MaxWords: 512, MaxWordBytes: 4096,
+        MaxWrapperDepth: 8, MaxInFlight: 4,
+    },
+})
+if err != nil {
+    return err
+}
+// Acquire/run/release plans through Eino, then drain this mount.
+mount.Deactivate()
+closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+return mount.Close(closeCtx)
+```
+
+The component must have a native source kind and honest artifact name, version,
+and hash. `ConfigHash` validates and hashes the effective immutable policy; Mount
+fills an empty component config hash and rejects a conflicting supplied hash.
+Caller slices and argument prefixes are copied. Rule and binding order do not
+change the hash. Every limit, parser/version, grammar version, and fixed diagnostic
+version participates. Scope and effective order are separately fingerprinted by
+Eino. Rotate artifact version/hash when implementation behavior changes. Saved
+runs require their exact original policy; never edit fingerprints to force resume.
+
+`Dialect` is a closed enum: `DialectPOSIX` and `DialectBash`. Empty dialect means
+POSIX. `Binding` names an exact model tool and literal top-level JSON string key;
+periods are ordinary key characters. Nil `Options.Bindings` selects
+`shell/cmd/POSIX` and `background_job_start/command/POSIX`. A nonnil list replaces
+these defaults, and an empty list or duplicate tool name is invalid. Use
+`DefaultBindings()` to obtain a fresh slice when extending them. `standard.shell`
+is a registration ID, not the model tool name. Unbound calls abstain without
+parsing or reserving capacity.
+
+`Rule` contains a unique identifier, one executable basename, and an exact
+positional `ArgPrefix`. Matching is case-sensitive, removes ordinary quoting,
+and compares the final POSIX slash-separated basename without filesystem access.
+`/usr/bin/git push` and `g'it' 'push'` match the example; `echo git push`,
+`git pushx`, and `git -C repo push` do not. Flags are never skipped. An empty
+prefix denies every invocation of that basename; an empty argument token is
+valid and distinct from no argument. Executable paths, regexes, globs and
+caller-supplied messages are not rule configuration.
+
+Unknown executable words deny. `git "$ACTION"` also denies because it could
+match `push`; `git status "$PATHSPEC"` can abstain after a known mismatch.
+Unknown words may split into multiple arguments, so later tokens cannot resolve
+an earlier ambiguous prefix. The guard walks all supported branches, including
+unreachable commands, pipelines, blocks, subshells, loops, case arms, scalar
+assignments, redirects, substitutions and expandable heredocs. Quoted literal
+heredocs stay data. Unquoted globs, tilde/brace expansion, simple parameters,
+command/process substitution and Bash dollar quoting are unknown words; nested
+execution is still inspected. CR bytes are preserved rather than inheriting the
+parser's CRLF normalization. Functions, arithmetic, arrays, extended globs,
+extended test/decl/time/coprocess syntax and non-simple parameter expansions deny
+conservatively. The parser stores extended-glob patterns as literal text, so
+walking them cannot reliably inspect nested execution.
+
+Assignments and loop targets reject shell-owned evaluation state: `OPTIND`,
+`RANDOM`, `SRANDOM`, `SECONDS`, `HISTCMD`, `MAILCHECK`, `PS0` through `PS4`,
+`PROMPT_COMMAND`, `ENV`, and the entire `BASH_*` family.
+The same restriction applies to `env` and `sudo` assignment operands. These
+targets include arithmetic, prompt and startup evaluation state;
+quoted values are not necessarily inert. The conservative
+boundary applies in both dialects, while ordinary scalar variables remain
+supported. Inherited attributes on host-owned variables remain a host concern.
+
+Wrapper rules apply before delegation, then again to every delegated executable.
+Only these exact forms are supported; unlisted flags, clusters, missing operands
+and dynamic selectors deny:
+
+| Wrapper | Supported operands before command |
+| --- | --- |
+| `env` | Repeated `-i`/`--ignore-environment`, `-u NAME`/`--unset=NAME`, `-C DIR`/`--chdir=DIR`; optional `--`, static ASCII `NAME=value` assignments. No command is an environment-only operation. |
+| `command` | Optional exact `-p`, optional `--`, required command. Query modes `-v`/`-V` deny. |
+| `exec` | Optional `--`, required command. |
+| `sudo` | Repeated `-n`, `-E`, `-H`; `-u USER`/`--user=USER`, `-g GROUP`/`--group=GROUP`, `-D DIR`/`--chdir=DIR`; optional `--`, static assignments, required command. |
+| `timeout` | Repeated `--foreground`, `--preserve-status`, `-v`/`--verbose`; `-s SIGNAL`/`--signal=SIGNAL`, `-k DURATION`/`--kill-after=DURATION`; optional `--`, required duration and command. Durations are digits, optional fractional digits, optional `s/m/h/d`; signals are positive decimal or ASCII names. |
+| `sh`, `bash` | Repeated exact `-e`, `-u`, `-x`, then exact `-c SCRIPT` or `-lc SCRIPT`, optional static `$0`, then positional data. SCRIPT must be literal and empty or begin with neither `-` nor `+`. Nested language follows the named shell. |
+
+`env -S`, shell/login/edit sudo modes, option-shaped sudo command selectors,
+script files, stdin/interactive shell
+modes, shell `--` before `-c`/`-lc`, and option-shaped SCRIPT operands are opaque.
+`sh -- -c ...` can execute a file named `-c`; it is never treated as an inline
+script. Trailing positional data remains subject to nested-execution checks.
+
+Structural builtin denials apply in both dialects, including POSIX bindings
+executed by a Bash-based `sh`: `eval`, `.`, `source`, `alias`, `unalias`, `builtin`,
+`enable`, `trap`, `fc`, `history`, `bind`, `complete`, `compgen`, `read`, `unset`,
+`getopts`, `mapfile`, `readarray`, `declare`, `typeset`, `local`, `export`,
+`readonly`, and `let`. These can reinterpret operands or shell state. `printf`
+with arguments requires a static first argument that is exact `--` or a non-option
+format; `printf -v` and a dynamic first argument deny. `test` and `[` require
+static operands, reject `-v`/`-R`, and `[` requires a final `]`. These are
+unsupported-analysis boundaries, not a built-in dangerous-command catalog.
+
+All fifteen `Limits` values are required and positive. Binding/rule counts,
+aggregate bytes per rule (including its ID), prefix argument counts, raw JSON
+bytes, JSON depth/nodes (keys count), decoded script bytes, total recursively
+parsed script bytes, AST nodes/depth, words, decoded word bytes, delegation depth,
+and per-mount in-flight analyses are bounded. `MaxAnalysisBytes` must be at least
+`MaxCommandBytes`. Nested scripts never reset budgets. Covered inputs must be
+one JSON object with EOF, unique keys at every level, a string command field,
+and valid visible UTF-8 without NUL. Unknown fields consume JSON budgets.
+Eino may repair invalid original wire bytes before this guard sees them.
+
+Parsing is synchronous and uses a fresh parser for each admitted analysis.
+Saturation returns a fixed capacity denial immediately; there is no queue.
+Cancellation checks occur between bounded reader calls and traversal steps, and
+permits return only after work ends. The parser has no pre-construction AST depth
+limit: script byte caps and admission bound its inputs, while AST limits apply
+after construction. These limits and context deadlines are not hard CPU, stack,
+process-memory, or real-time guarantees.
+
+The example settings above were measured on macOS/arm64, Apple M4 Max, Go 1.26.3:
+ordinary complete analysis allocated about 7.7 KB/op; nested `-c` analysis about
+20 KB/op. Parsing a 4,007-byte script with 2,000 nested parentheses, before AST
+limits, allocated about 342 KB/op; full bounded analysis allocated about 367 KB/op.
+A 500-level substitution fixture allocated about 200 KB/op during parsing.
+Sampling during parser reads measured about 4 MB of process stack growth for
+the parentheses fixture and 1 MB for substitutions in a fresh parsing goroutine.
+The resource test rejects these fixtures if allocation exceeds 4 MB or sampled
+stack growth exceeds 8 MB; these are regression checks for the example inputs.
+Four admitted analyses can retain several such stacks concurrently. Saturated
+admission allocated zero bytes/op. These are fixture measurements,
+not throughput or worst-case memory guarantees. Re-run
+`go test ./commandguard -run '^$' -bench . -benchmem` for the host's environment.
+
+Zero scope selects global policy; `extension.SessionScope` selects one exact
+durable session. Zero order selects `runtime.OrderHostPolicy`. Acquired plans
+continue enforcing after deactivation. Future plans exclude the guard; Close
+waits for acquired leases, can time out and retry, and is idempotent after success.
+Resume checks saved pending input without rerunning prepare transforms; running
+calls are interrupted and terminal calls skipped. Later mounts do not join an
+old saved plan. Eino's Resume settles recovery work and ends interrupted; the
+host can start a subsequent model turn using the durable results.
+
+Added diagnostics are fixed: `command policy denied: rule-match`,
+`invalid-command`, `unanalysable-command`, `analysis-limit`, or `capacity`
+(with the same prefix). Internal failures use `command policy failed: internal`;
+actual cancellation returns the context error. Denial code is always
+`command_policy_denied`, but Eino persists the protected result derived from the
+message, not a separate guard-code field. Diagnostics never echo rules, command
+text, paths, parser errors or panic values. Normalized command input is already
+stored before the guard runs; result redaction does not erase it.
+
+This is trusted native syntax inspection, **not a sandbox**. It performs no
+process execution, workspace reads, environment resolution, credential access,
+network calls or configuration discovery. Basenames do not certify executable
+identity. Inherited environment, profiles, aliases/functions, executable contents,
+external scripts and arbitrary interpreter languages remain host concerns. Hosts
+must choose honest tool fields/dialects and retain their permission/process policy.
+PowerShell, cmd.exe, Zsh, project rule discovery, hot reload and Wasm are outside
+this package.
+
+Run the portable, subprocess-free example with
+`GOWORK=off go run ./examples/command-guard`. It uses a scripted model, typed host
+tool, real composition and SQLite, and prints one allowed and one denied outcome.
+Unix integration tests separately exercise the actual standard shell and
+background-job bindings. CI runs these on Linux/macOS with verified Bash 5+ for
+implicit-builtin references, and compiles the guard and example for Windows.
+
+The parser dependency is `mvdan.cc/sh/v3@v3.14.1` (BSD-3-Clause), imported only
+through `syntax`. Its module graph selects `golang.org/x/sys@v0.47.0`.
+Production catalog tests directly import Eino's existing `eino-tools` pin and
+its `doublestar/v4` dependency; Eino Agent v0.3.3 and Go 1.26.3 remain unchanged.
