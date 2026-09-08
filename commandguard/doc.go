@@ -16,7 +16,9 @@
 //
 // Analysis walks every supported compound branch, substitution, assignment and
 // redirection, including expandable heredocs. Functions, arithmetic, arrays,
-// non-simple parameter expansions and other unsupported execution grammar deny.
+// extended globs, non-simple parameter expansions and other unsupported
+// execution grammar deny. Extended-glob patterns are literal parser payloads
+// whose nested execution cannot be inspected by walking the AST.
 // Quoted literal heredocs remain data. Ordinary shell quoting is removed without
 // expansion; ANSI-C and locale quoting remain unknown. CR bytes are preserved
 // despite the pinned parser's CRLF normalization, using a length-preserving
@@ -27,6 +29,11 @@
 // README are supported. Shell -- before mode selection, option-shaped script
 // operands, script files, and dynamic selectors deny. Nested scripts share all
 // resource counters and select their named shell's dialect.
+// Assignments, loop targets, and env/sudo assignment operands reject shell-owned
+// arithmetic, prompt, and startup state, including all BASH_* targets.
+// The exact inventory is documented in the README. This applies in both dialects
+// and preserves ordinary scalar variables; their inherited attributes are a
+// host concern. Quoted values assigned to special targets can execute later.
 //
 // Builtins that reinterpret operands or shell state (including eval, source,
 // trap, variable-target builtins, aliases and completion/history builtins) are

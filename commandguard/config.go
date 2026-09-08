@@ -93,7 +93,7 @@ type behaviorIdentity struct {
 }
 
 func currentBehavior() behaviorIdentity {
-	return behaviorIdentity{"command-policy-v1", "fixed-denials-v1", "posix-basename-positional-prefix-v1", "bounded-wrappers-v1", "builtin-operands-v1", "ast-simple-parameter-cr-preserving-v1", "mvdan.cc/sh/v3@v3.14.1"}
+	return behaviorIdentity{"command-policy-v1", "fixed-denials-v1", "posix-basename-positional-prefix-v1", "bounded-wrappers-special-targets-v2", "builtin-operands-v1", "ast-special-targets-no-extglob-v2", "mvdan.cc/sh/v3@v3.14.1"}
 }
 func configHash(p policy) string { return hashBehavior(p, currentBehavior()) }
 func hashBehavior(p policy, identity behaviorIdentity) string {

@@ -824,8 +824,19 @@ assignments, redirects, substitutions and expandable heredocs. Quoted literal
 heredocs stay data. Unquoted globs, tilde/brace expansion, simple parameters,
 command/process substitution and Bash dollar quoting are unknown words; nested
 execution is still inspected. CR bytes are preserved rather than inheriting the
-parser's CRLF normalization. Functions, arithmetic, arrays, extended test/decl/time/
-coprocess syntax and non-simple parameter expansions deny conservatively.
+parser's CRLF normalization. Functions, arithmetic, arrays, extended globs,
+extended test/decl/time/coprocess syntax and non-simple parameter expansions deny
+conservatively. The parser stores extended-glob patterns as literal text, so
+walking them cannot reliably inspect nested execution.
+
+Assignments and loop targets reject shell-owned evaluation state: `OPTIND`,
+`RANDOM`, `SRANDOM`, `SECONDS`, `HISTCMD`, `MAILCHECK`, `PS0` through `PS4`,
+`PROMPT_COMMAND`, `ENV`, and the entire `BASH_*` family.
+The same restriction applies to `env` and `sudo` assignment operands. These
+targets include arithmetic, prompt and startup evaluation state;
+quoted values are not necessarily inert. The conservative
+boundary applies in both dialects, while ordinary scalar variables remain
+supported. Inherited attributes on host-owned variables remain a host concern.
 
 Wrapper rules apply before delegation, then again to every delegated executable.
 Only these exact forms are supported; unlisted flags, clusters, missing operands

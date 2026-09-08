@@ -184,6 +184,10 @@ func (a *analysis) wrapper(name string, args []word, depth, wrappers int) outcom
 				}
 				break
 			}
+			key, _, _ := strings.Cut(args[i].text, "=")
+			if opaqueVariableTarget(key) {
+				return unanalysable
+			}
 			i++
 		}
 	}

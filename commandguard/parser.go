@@ -121,13 +121,21 @@ func (a *analysis) script(s string, d Dialect, baseDepth, wrappers int) outcome 
 		}
 		a.nodes++
 		switch v := n.(type) {
-		case *syntax.File, *syntax.Stmt, *syntax.Comment, *syntax.CallExpr, *syntax.BinaryCmd, *syntax.Block, *syntax.Subshell, *syntax.IfClause, *syntax.WhileClause, *syntax.CaseClause, *syntax.CaseItem, *syntax.WordIter, *syntax.Redirect, *syntax.Lit, *syntax.SglQuoted, *syntax.DblQuoted, *syntax.CmdSubst, *syntax.ProcSubst, *syntax.ExtGlob:
+		case *syntax.File, *syntax.Stmt, *syntax.Comment, *syntax.CallExpr, *syntax.BinaryCmd, *syntax.Block, *syntax.Subshell, *syntax.IfClause, *syntax.WhileClause, *syntax.CaseClause, *syntax.CaseItem, *syntax.Redirect, *syntax.Lit, *syntax.SglQuoted, *syntax.DblQuoted, *syntax.CmdSubst, *syntax.ProcSubst:
+		case *syntax.ExtGlob:
+			// The pinned parser stores the pattern as a Lit, so walking it
+			// cannot inspect any command substitutions inside that pattern.
+			result = unanalysable
+		case *syntax.WordIter:
+			if v.Name == nil || opaqueVariableTarget(v.Name.Value) {
+				result = unanalysable
+			}
 		case *syntax.ForClause:
 			if _, ok := v.Loop.(*syntax.WordIter); !ok {
 				result = unanalysable
 			}
 		case *syntax.Assign:
-			if v.Index != nil || v.Array != nil || v.Naked || v.Append {
+			if v.Name == nil || opaqueVariableTarget(v.Name.Value) || v.Index != nil || v.Array != nil || v.Naked || v.Append {
 				result = unanalysable
 			}
 		case *syntax.ParamExp:
