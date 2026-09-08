@@ -38,11 +38,15 @@ jobs:
           GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./backgroundjobs -o "$output_dir/backgroundjobs.test.exe"
           GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./pythonrepl -o "$output_dir/pythonrepl.test.exe"
           GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./commandguard -o "$output_dir/commandguard.test.exe"
+          GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./rtkreducer -o "$output_dir/rtkreducer.test.exe"
           GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./examples/command-guard -o "$output_dir/command-guard-example.test.exe"
+          GOOS=windows GOARCH=amd64 GOWORK=off go test -c ./examples/rtk-reducer -o "$output_dir/rtk-reducer-example.test.exe"
       - name: Test
         run: GOWORK=off go test ./...
         env:
           PYTHON_REPL_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+      - name: Fuzz RTK JSON mirror scanner
+        run: GOWORK=off go test ./rtkreducer -run '^$' -fuzz FuzzJSONMirror -fuzztime=20s
       - name: Race test
         run: GOWORK=off go test -race ./...
         env:
@@ -115,3 +119,78 @@ jobs:
         run: GOWORK=off go test ./commandguard ./examples/command-guard
       - name: Race test guard
         run: GOWORK=off go test -race ./commandguard
+
+  rtk-reducer-matrix:
+    name: RTK reducer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Download and verify RTK v0.48.0
+        shell: bash
+        run: |
+          case "$(uname -s):$(uname -m)" in
+            Linux:x86_64)
+              asset=rtk-x86_64-unknown-linux-musl.tar.gz
+              archive_sha=e4e650fa1677c0de2f6839a6040d7b17f312d32f163c402b75af70e9e5af1a91
+              ;;
+            Linux:aarch64|Linux:arm64)
+              asset=rtk-aarch64-unknown-linux-gnu.tar.gz
+              archive_sha=5ed65486a96077bd6bba7c87fdc9d0e4a1918d19619be3c87380888389a30c7c
+              ;;
+            Darwin:x86_64)
+              asset=rtk-x86_64-apple-darwin.tar.gz
+              archive_sha=a95f2c23e08572dcc84ddff5fbe432e41e7f94369622eb086cca49ae0b6f61e8
+              ;;
+            Darwin:arm64)
+              asset=rtk-aarch64-apple-darwin.tar.gz
+              archive_sha=4fa025cc93a744b6963f4e53a008e5ba3f74b6a38061f4a47c639e1c3023e0db
+              ;;
+            *)
+              echo "unsupported RTK runner architecture: $(uname -s):$(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          install_dir="$(mktemp -d "$RUNNER_TEMP/rtk-reducer.XXXXXX")"
+          archive="$install_dir/$asset"
+          curl --fail --location --silent --show-error \
+            "https://github.com/rtk-ai/rtk/releases/download/v0.48.0/$asset" \
+            --output "$archive"
+          printf '%s  %s\n' "$archive_sha" "$archive" | shasum -a 256 --check
+          test "$(tar -tzf "$archive")" = rtk
+          tar -xzf "$archive" -C "$install_dir"
+          test -f "$install_dir/rtk"
+          test ! -L "$install_dir/rtk"
+          chmod 0500 "$install_dir/rtk"
+          test "$("$install_dir/rtk" --version)" = "rtk 0.48.0"
+          echo "RTK_REDUCER_TEST_EXECUTABLE=$install_dir/rtk" >> "$GITHUB_ENV"
+          echo "RTK_REDUCER_REQUIRE_REAL=1" >> "$GITHUB_ENV"
+      - name: Test released RTK process and runtime journeys
+        run: |
+          test -x "$RTK_REDUCER_TEST_EXECUTABLE"
+          command -v rg
+          rg --version
+          GOWORK=off go test -v ./rtkreducer ./examples/rtk-reducer
+      - name: Network-denied RTK pipe smoke where supported
+        shell: bash
+        run: |
+          if [[ "$(uname -s)" == Linux ]] && command -v unshare >/dev/null && unshare --net true >/dev/null 2>&1; then
+            unshare --net env RTK_REDUCER_TEST_EXECUTABLE="$RTK_REDUCER_TEST_EXECUTABLE" GOWORK=off \
+              go test ./rtkreducer -run '^TestRealRTKGoTestPreservesRepresentativeFailures$' -count=1
+          elif [[ "$(uname -s)" == Darwin ]] && command -v sandbox-exec >/dev/null; then
+            sandbox-exec -p '(version 1)(allow default)(deny network*)' \
+              env RTK_REDUCER_TEST_EXECUTABLE="$RTK_REDUCER_TEST_EXECUTABLE" GOWORK=off \
+              go test ./rtkreducer -run '^TestRealRTKGoTestPreservesRepresentativeFailures$' -count=1
+          else
+            echo "network namespace/sandbox unavailable on this runner; explicit private-environment real-RTK tests still ran"
+          fi
+      - name: Race test reducer
+        run: GOWORK=off go test -race ./rtkreducer ./examples/rtk-reducer

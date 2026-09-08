@@ -5,9 +5,50 @@ This repository contains focused extensions for
 It currently provides a session-scoped Python REPL, bounded background command
 jobs, a host-mediated `ask_user` tool, a bounded delegated-task bridge, a
 bounded host-mediated `web_search` bridge, a trusted workspace-instructions
-prompt section, a trusted native tool-result secret redactor, and a command-policy
-guard, all verified
-against Eino Agent v0.3.3.
+prompt section, a trusted native tool-result secret redactor, a command-policy
+guard, and a bounded RTK tool-result reducer, all verified against Eino Agent
+v0.3.3.
+
+## Bounded RTK tool-result reducer
+
+`rtkreducer` is an explicit, trusted native result transform for hosts that
+provision [RTK v0.48.0](https://github.com/rtk-ai/rtk/releases/tag/v0.48.0)
+themselves. Mounting requires an absolute executable path, its lowercase
+SHA-256 digest, an existing trusted temporary root, and positive finite
+limits. The extension never downloads, installs, initializes, discovers, or
+updates RTK. The host must keep the verified executable immutable for the
+mount's lifetime and independently review RTK's [Apache-2.0 license](https://github.com/rtk-ai/rtk/blob/v0.48.0/LICENSE).
+Supported production targets are Linux and macOS on amd64 or arm64 when the
+host supplies a compatible executable; other targets compile but reject the
+mount. Private directories and environment isolation do not constitute an OS
+network sandbox.
+
+There is no default binding. Hosts explicitly select a model/runtime tool,
+`TextOnly` output or a byte-identical `JSONMirror`, exact optional input
+matches, and one fixed filter (`GoTest`, `GitDiff`, or `Log`). The host owns the
+format assertion: arbitrary text is not automatically classified as a Go test,
+diff, or log. A successful field is prefixed with a visible
+`[Reduced by RTK <filter>; original_bytes=<n>]` marker only when the complete
+encoded result is strictly smaller. No-gain, malformed, canceled, capacity,
+timeout, or process-failure cases pass through the original result.
+
+The reducer is lossy and does not promise semantic equivalence or preservation
+of every diagnostic. Runtime settlement, status, retention, permissions,
+attachments, and unselected JSON bytes remain authoritative. The byte counts
+are measured encoded bytes; RTK's estimated token accounting is not a billing,
+compression, or savings guarantee. A trusted child receives private HOME/XDG/
+temporary directories and no ambient environment; startup notices and stderr
+are discarded. Cleanup covers the direct child, its pipes, and package-owned
+private directories, not arbitrary descendants. The package stores no raw
+output artifact and provides no retrieval API.
+
+Mount this reducer before the existing final `toolresultredactor` when retained
+text may contain secrets. Removal, configuration or limit changes, artifact
+identity drift, and RTK digest changes intentionally make strict Eino resume
+fail; saved fingerprints are never rewritten. See
+[`examples/rtk-reducer`](examples/rtk-reducer) for a synthetic JSON-native
+registry/orchestrator/SQLite journey and an exact standard-shell binding
+example. The example executes no command in the reader's workspace.
 
 ## Session-scoped Python REPL
 
