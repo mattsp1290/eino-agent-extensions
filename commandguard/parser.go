@@ -48,21 +48,9 @@ func (a *analysis) script(s string, d Dialect, baseDepth, wrappers int) outcome 
 	if !validText(s) {
 		return invalidCommand
 	}
-	// The parser normalizes CRLF and treats bare CR as whitespace. Real shells
-	// preserve CR. Mask it with an unused ordinary control byte before parsing,
-	// then restore decoded literals. Length and all shell metacharacters stay put.
-	var carriage byte
-	if strings.ContainsRune(s, '\r') {
-		for _, candidate := range []byte{1, 2, 3, 4, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31} {
-			if !strings.ContainsRune(s, rune(candidate)) {
-				carriage = candidate
-				break
-			}
-		}
-		if carriage == 0 {
-			return unanalysable
-		}
-		s = strings.ReplaceAll(s, "\r", string(carriage))
+	s, carriage, result := maskCarriageReturns(s)
+	if result != abstain {
+		return result
 	}
 	a.bytes += len(s)
 	file, err := a.parse(contextReader{a.ctx, strings.NewReader(s)}, d)
@@ -80,86 +68,20 @@ func (a *analysis) script(s string, d Dialect, baseDepth, wrappers int) outcome 
 	if file == nil {
 		panic(errInternal)
 	}
-	if a.decoded == nil {
-		a.decoded = make(map[*syntax.Word]word)
-	}
-	var stack []syntax.Node
-	result := abstain
-	syntax.Walk(file, func(n syntax.Node) bool {
-		if n == nil {
-			parent := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			if result != abstain {
-				return false
-			}
-			switch v := parent.(type) {
-			case *syntax.Word:
-				w, o := a.decode(v, carriage)
-				result = o
-				a.decoded[v] = w
-			case *syntax.CallExpr:
-				if len(v.Args) > 0 {
-					args := make([]word, len(v.Args))
-					for i, w := range v.Args {
-						args[i] = a.decoded[w]
-					}
-					result = a.command(args, baseDepth+len(stack)+1, wrappers)
-				}
-			}
-			return false
-		}
-		if result != abstain {
-			return false
-		}
-		if a.ctx.Err() != nil {
-			result = invalidCommand
-			return false
-		}
-		if a.nodes >= l.MaxASTNodes || len(stack) >= l.MaxASTDepth-baseDepth {
-			result = analysisLimit
-			return false
-		}
-		a.nodes++
-		switch v := n.(type) {
-		case *syntax.File, *syntax.Stmt, *syntax.Comment, *syntax.CallExpr, *syntax.BinaryCmd, *syntax.Block, *syntax.Subshell, *syntax.IfClause, *syntax.WhileClause, *syntax.CaseClause, *syntax.CaseItem, *syntax.Redirect, *syntax.Lit, *syntax.SglQuoted, *syntax.DblQuoted, *syntax.CmdSubst, *syntax.ProcSubst:
-		case *syntax.ExtGlob:
-			// The pinned parser stores the pattern as a Lit, so walking it
-			// cannot inspect any command substitutions inside that pattern.
-			result = unanalysable
-		case *syntax.WordIter:
-			if v.Name == nil || opaqueVariableTarget(v.Name.Value) {
-				result = unanalysable
-			}
-		case *syntax.ForClause:
-			if _, ok := v.Loop.(*syntax.WordIter); !ok {
-				result = unanalysable
-			}
-		case *syntax.Assign:
-			if v.Name == nil || opaqueVariableTarget(v.Name.Value) || v.Index != nil || v.Array != nil || v.Naked || v.Append {
-				result = unanalysable
-			}
-		case *syntax.ParamExp:
-			if !simpleParameter(v) {
-				result = unanalysable
-			}
-		case *syntax.Word:
-			if a.words >= l.MaxWords {
-				result = analysisLimit
-			} else {
-				a.words++
-			}
-		default:
-			result = unanalysable
-		}
-		if result != abstain {
-			return false
-		}
-		stack = append(stack, n)
-		return true
-	})
-	return result
+	return a.walkScript(file, carriage, baseDepth, wrappers)
 }
 
-func simpleParameter(p *syntax.ParamExp) bool {
-	return p.Param != nil && p.Flags == nil && !p.Excl && !p.Length && !p.Width && !p.IsSet && p.Split == syntax.OptUnset && p.GlobSubst == syntax.OptUnset && p.RcExpand == syntax.OptUnset && p.NestedParam == nil && p.Index == nil && len(p.Modifiers) == 0 && p.Slice == nil && p.Repl == nil && p.Names == 0 && p.Exp == nil
+// The parser normalizes CRLF and treats bare CR as whitespace. Real shells
+// preserve CR. Use an absent ordinary control byte as a length-preserving mask;
+// decoding restores CR without changing any shell metacharacter.
+func maskCarriageReturns(s string) (string, byte, outcome) {
+	if !strings.ContainsRune(s, '\r') {
+		return s, 0, abstain
+	}
+	for _, candidate := range []byte{1, 2, 3, 4, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31} {
+		if !strings.ContainsRune(s, rune(candidate)) {
+			return strings.ReplaceAll(s, "\r", string(candidate)), candidate, abstain
+		}
+	}
+	return "", 0, unanalysable
 }

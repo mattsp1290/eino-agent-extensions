@@ -20,3 +20,15 @@ func opaqueVariableTarget(name string) bool {
 	}
 	return false
 }
+
+func variableName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range []byte(s) {
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
